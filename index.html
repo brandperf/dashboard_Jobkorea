@@ -318,7 +318,8 @@ function fullYear(y){y=+y;return y<100?2000+y:y;}
 function parseSchedule(str,baseYear){
   if(!str)return null;
   str=String(str).trim();
-  const parts=str.split('~');
+  /* support both ~ and - as range separators (e.g. "25.02~25.04" or "25.02-25.04") */
+  const parts=str.split(/[~～\-]/);
   const left=parts[0].trim();
   const right=(parts[1]||'').trim();
   function toYM(tok,defYear){
@@ -396,7 +397,7 @@ const OPTION_PALETTE=['#1F4FE0','#E06D2D','#0E8A5F','#B6892F','#7E8CB0','#D33A57
 const brandOf=t=>{const n=byTitle[t]?byTitle[t].name:t; const p=n.split('.').slice(1).join('.'); const u=p.split('_'); return u[u.length-1].replace(/\s*\(복수\)\s*$/,'').trim();};
 function colorFor(label,i){if(label.includes(JK))return'#1F4FE0';if(label.includes(SR))return'#29A8E0';return MUTED[i%MUTED.length];}
 function fmtN(v,d){return v==null?'–':(+v).toFixed(d==null?1:d)}
-const GAP_SECTIONS=new Set(['인지','태도','행동']);
+const GAP_SECTIONS=new Set(['인지','태도','행동','리브랜딩 성과 점검','표본 특성']);
 
 /* null-out months with no data (all non-derived responses null/0) so lines break there */
 function cleanBlock(b){
@@ -426,9 +427,9 @@ function colorForEx(label,i){
 function isBoldLabel(label){return label.includes(JK)||label.includes(SR)||!!SPECIAL_COLOR[label];}
 
 /* descending month <option>s (latest first); '전체' goes last when allowAll */
-function monthOptions(months,allowAll,selected){
+function monthOptions(months,allowAll,selected,suffix=''){
   let s='';
-  for(let i=months.length-1;i>=0;i--)s+=`<option value="${i}" ${String(i)===String(selected)?'selected':''}>${months[i]}</option>`;
+  for(let i=months.length-1;i>=0;i--)s+=`<option value="${i}" ${String(i)===String(selected)?'selected':''}>${months[i]}${suffix}</option>`;
   if(allowAll)s+=`<option value="__all__" ${selected==='__all__'?'selected':''}>전체</option>`;
   return s;
 }
@@ -573,15 +574,29 @@ function campaignColor(brand,idx){
   for(const k in CAMPAIGN_COLORS){if(brand.includes(k))return CAMPAIGN_COLORS[k];}
   return CAMPAIGN_FALLBACK[idx%CAMPAIGN_FALLBACK.length];
 }
+/* Campaigns for BADGES: full data range → shows all brands' campaigns within data period */
+function campaignsForBadges(months,visibleBrands){
+  if(!CAMPAIGNS.length)return[];
+  const dataStartYM=monthLabelToYM(months[0]);
+  const dataLastYM=monthLabelToYM(months[months.length-1]);
+  if(dataStartYM==null||dataLastYM==null)return[];
+  return CAMPAIGNS.filter(c=>{
+    const shown=visibleBrands.some(b=>b===c.brand||b.includes(c.brand)||c.brand.includes(b));
+    if(!shown)return false;
+    const cEnd=c.endYM==null?dataLastYM:c.endYM;
+    return c.startYM<=dataLastYM && cEnd>=dataStartYM;
+  });
+}
+/* Campaigns for SHADING: only those overlapping the visible range */
 function campaignsForView(months,s,e,visibleBrands){
   if(!CAMPAIGNS.length)return[];
   const startYM=monthLabelToYM(months[s]), endYM=monthLabelToYM(months[e]);
+  const dataLastYM=monthLabelToYM(months[months.length-1])||endYM;
   if(startYM==null||endYM==null)return[];
   return CAMPAIGNS.filter(c=>{
-    /* strict brand match: campaign brand must correspond to a currently selected brand */
     const shown=visibleBrands.some(b=>b===c.brand||b.includes(c.brand)||c.brand.includes(b));
     if(!shown)return false;
-    const cEnd=c.endYM==null?endYM:c.endYM;
+    const cEnd=c.endYM==null?dataLastYM:c.endYM;
     return c.startYM<=endYM && cEnd>=startYM;
   });
 }
@@ -611,17 +626,46 @@ function renderCampaignOverlay(chartInst,months,s,e,visibleBrands,ct){
   const gridW=chartW-CHART_PAD*2-GRID_L-GRID_R;
   const N=e-s+1;
   const startYM=monthLabelToYM(months[s]), endYM=monthLabelToYM(months[e]);
+  const visYMs=[];
+  for(let i=s;i<=e;i++)visYMs.push(monthLabelToYM(months[i]));
+  const dataLastYM=monthLabelToYM(months[months.length-1])||endYM;
   let boundaryGap=false;
   try{boundaryGap=chartInst.getOption()?.xAxis?.[0]?.boundaryGap===true;}catch(_){}
+
+  /* Get exact pixel x-positions for each visible month directly from ECharts */
+  const monthPx=[];
+  let pixelOk=false;
+  try{
+    for(let i=0;i<N;i++)monthPx.push(chartInst.convertToPixel({xAxisIndex:0},i));
+    pixelOk=monthPx.length===N&&monthPx.every(p=>typeof p==='number'&&isFinite(p));
+  }catch(_){}
+  /* Right edge of chart plot area (clamp all shading to this) */
+  const rightEdgePx=pixelOk&&N>0
+    ?(boundaryGap&&N>=2?monthPx[N-1]+(monthPx[N-1]-monthPx[N-2])/2:monthPx[N-1])
+    :chartW-GRID_R-CAMP_MARGIN;
+
+  /* Map a YM value to its pixel x-position.
+     Uses exact monthPx lookup with linear interpolation for in-between dates.
+     Extrapolates right for endYM+1 (= "start of next month after campaign end"). */
   function pxForYM(ym){
-    const clamped=Math.max(startYM,Math.min(endYM,ym));
-    const frac=(endYM===startYM)?0:(clamped-startYM)/(endYM-startYM);
-    if(boundaryGap){
-      const band=gridW/N;
-      return CHART_PAD+GRID_L+band*0.5+frac*(gridW-band)-CAMP_MARGIN;
+    if(!pixelOk||N===0)return 0;
+    /* Find position by searching visYMs */
+    if(ym<=visYMs[0])return monthPx[0]-CAMP_MARGIN;
+    for(let i=1;i<N;i++){
+      if(visYMs[i]===ym)return monthPx[i]-CAMP_MARGIN;
+      if(visYMs[i]>ym){
+        /* interpolate between i-1 and i */
+        const frac=(ym-visYMs[i-1])/(visYMs[i]-visYMs[i-1]);
+        return monthPx[i-1]+frac*(monthPx[i]-monthPx[i-1])-CAMP_MARGIN;
+      }
     }
-    const pad=gridW*0.03, usable=gridW-pad*2;
-    return CHART_PAD+GRID_L+pad+frac*usable-CAMP_MARGIN;
+    /* ym > last visible month: extrapolate using last step, clamp to right edge */
+    if(N>=2){
+      const step=(monthPx[N-1]-monthPx[N-2])/(visYMs[N-1]-visYMs[N-2]);
+      const px=monthPx[N-1]+(ym-visYMs[N-1])*step;
+      return Math.min(px,rightEdgePx)-CAMP_MARGIN;
+    }
+    return rightEdgePx-CAMP_MARGIN;
   }
   /* shade inside #ch — .card has no position:relative so its overflow:hidden
      does NOT clip absolute children whose containing block is #ch.
@@ -668,7 +712,7 @@ function renderCampaignOverlay(chartInst,months,s,e,visibleBrands,ct){
     const sorted=arr.slice().sort((a,b)=>a.startYM-b.startYM);
     const clusters=[];
     sorted.forEach(c=>{
-      const cEnd=c.endYM==null?endYM:c.endYM;
+      const cEnd=c.endYM==null?dataLastYM:c.endYM;
       /* try to merge into last cluster that this overlaps */
       let merged=false;
       for(let i=clusters.length-1;i>=0;i--){
@@ -698,13 +742,13 @@ function renderCampaignOverlay(chartInst,months,s,e,visibleBrands,ct){
 
     const clusters=clusterOverlap(brandMap[brand]);
     clusters.forEach(cl=>{
+      /* start at month mark, end at next-month mark (covers full end month) */
       const x0=pxForYM(cl.startYM);
-      const x1=pxForYM(cl.endYM);
+      const x1=pxForYM(cl.endYM==null?dataLastYM+1:cl.endYM+1);
       const totalW=Math.max(4,x1-x0);
       const n=cl.camps.length;
-      /* shading for each individual campaign period */
       cl.camps.forEach(c=>{
-        const sx0=pxForYM(c.startYM), sx1=pxForYM(c.endYM==null?endYM:c.endYM);
+        const sx0=pxForYM(c.startYM), sx1=pxForYM(c.endYM==null?dataLastYM+1:c.endYM+1);
         const w=Math.max(2,sx1-sx0);
         const sh=document.createElement('div');
         sh.style.cssText=`position:absolute;left:${sx0+CAMP_MARGIN}px;top:${shadeTop}px;width:${w}px;height:${shadeH}px;`+
@@ -744,7 +788,7 @@ function renderCampaignOverlay(chartInst,months,s,e,visibleBrands,ct){
 }
 
 /* Populate gap cells aligned to chart x-axis - called after chart renders */
-function renderAlignedGap(chartInst,allMonths,s,e,gapRows){
+function renderAlignedGap(chartInst,allMonths,s,e,gapRows,useMath){
   const validRows=gapRows.filter(r=>r&&r.values);
   if(!validRows.length)return;
 
@@ -764,7 +808,7 @@ function renderAlignedGap(chartInst,allMonths,s,e,gapRows){
     /* Prefer exact pixel positions from ECharts; fall back to math if unavailable */
     let usePixel=false, pxOffset=0, pxAt=null;
     try{
-      if(typeof chartInst.convertToPixel==='function'){
+      if(!useMath&&typeof chartInst.convertToPixel==='function'){
         const test=chartInst.convertToPixel({xAxisIndex:0},0);
         if(typeof test==='number'&&isFinite(test)){
           usePixel=true;
@@ -901,8 +945,9 @@ function wireBrandDrop(root,labels,vs,onChange,id){
 function stmtDropHTML(labels,vs,id,singleSelect){
   id=id||'stmtDd';
   const on=labels.filter(l=>!vs.hidden.has(l)).length;
+  const selLabel=singleSelect?(labels.find(l=>!vs.hidden.has(l))||labels[0]||'선택'):(on+' 항목 선택됨');
   const items=labels.map(l=>`<label class="dd-item"><input type="${singleSelect?'radio':'checkbox'}" name="stmtChk" value="${l}" ${!vs.hidden.has(l)?'checked':''}>${l.length>22?l.slice(0,22)+'…':l}</label>`).join('');
-  return `<div class="dd-wrap" id="${id}"><button class="dd-btn" type="button"><span id="${id}Lbl">${on} 항목 선택됨</span>&nbsp;▾</button>
+  return `<div class="dd-wrap" id="${id}"><button class="dd-btn" type="button"><span id="${id}Lbl">${selLabel}</span>&nbsp;▾</button>
     <div class="dd-menu" style="max-height:280px">${items}</div></div>`;
 }
 function wireStmtDrop(root,labels,vs,onChange,id,singleSelect){
@@ -911,7 +956,11 @@ function wireStmtDrop(root,labels,vs,onChange,id,singleSelect){
   const btn=dd.querySelector('.dd-btn');
   btn.onclick=(e)=>{e.stopPropagation();dd.classList.toggle('open');};
   document.addEventListener('click',()=>dd.classList.remove('open'),{once:false});
-  function updateLbl(){const on=labels.filter(l=>!vs.hidden.has(l)).length;const el=dd.querySelector('span');if(el)el.textContent=on+' 항목 선택됨';}
+  function updateLbl(){
+    const el=dd.querySelector('span');if(!el)return;
+    if(singleSelect){const sel=labels.find(l=>!vs.hidden.has(l));el.textContent=sel||labels[0]||'선택';}
+    else{el.textContent=labels.filter(l=>!vs.hidden.has(l)).length+' 항목 선택됨';}
+  }
   dd.querySelectorAll('input').forEach(cb=>{cb.onchange=()=>{
     if(singleSelect){vs.hidden.clear();labels.forEach(l=>{if(cb.value!==l)vs.hidden.add(l);});}
     else{const l=cb.value;if(cb.checked)vs.hidden.delete(l);else vs.hidden.add(l);}
@@ -1062,7 +1111,7 @@ function mkSeries(list,months,type,opts){
     if(type==='bar'){
       const data=s.values.map((v,m)=>({value:v,label:{show:labelShow[i][m]}}));
       return {name:s.label,type:'bar',data,itemStyle:{color:c,borderRadius:[2,2,0,0]},
-        emphasis:{focus:'series'},z:bold?10:1,
+        barMaxWidth:61,emphasis:{focus:'series'},z:bold?10:1,
         labelLayout:{hideOverlap:false,moveOverlap:'shiftY'},
         label:{show:true,position:'top',fontSize:bold?10:9,color:c,fontWeight:bold?700:500,
           formatter:p=>p.value==null?'':(+p.value).toFixed(1)}};
@@ -1103,7 +1152,7 @@ function drawStackOpt(months,seriesList,opts){
   }
 
   const ser=displayList.map((s,i)=>({name:s.label,type:'bar',stack:'a',data:s.values,
-    itemStyle:{color:pickColor(s.label,i,opts)},
+    barMaxWidth:61,itemStyle:{color:pickColor(s.label,i,opts)},
     labelLayout:{hideOverlap:true,moveOverlap:'shiftY'},
     label:{show:opts.percentLike!==false,position:'inside',fontSize:9,color:'#fff',fontWeight:600,
       formatter:p=>(p.value!=null&&Math.abs(p.value)>=(isPct?3:0.5))?(+p.value).toFixed(1)+'%':''}}));
@@ -1135,7 +1184,7 @@ function drawPieOpt(months,seriesList,opts){
   chart.setOption({
     tooltip:{trigger:'item',valueFormatter:v=>(+v).toFixed(1)+(opts.unitLabel||'')},
     legend:{type:'scroll',bottom:0,textStyle:{fontSize:10.5,color:'#3A4055'}},
-    graphic:[{type:'text',left:'center',top:8,style:{text:mLabel+' 구성',fontSize:12,fill:'#6B7186',fontWeight:600}}],
+    graphic:[{type:'text',left:'center',top:8,style:{text:mLabel+' 기준',fontSize:12,fill:'#6B7186',fontWeight:600}}],
     series:[{type:'pie',radius:['38%','62%'],center:['50%','48%'],padAngle:1,itemStyle:{borderRadius:4,borderColor:'#fff',borderWidth:2},
       data,labelLayout:{moveOverlap:'shiftY'},
       label:{formatter:p=>p.name+'  '+(+p.value).toFixed(1)+(opts.unitLabel||'')}}]
@@ -1369,7 +1418,14 @@ function vTrend(v){
           cTog.onclick=()=>{vs.showCampaign=!vs.showCampaign;styleBtn(cTog,vs.showCampaign);
             document.getElementById('campstrip').style.display=vs.showCampaign?'':'none';
             const sh=document.getElementById('campaignShade');if(sh)sh.style.display=vs.showCampaign?'':'none';
-            if(vs.showCampaign)renderView(CFG.views[state.view]);};}
+            if(vs.showCampaign){
+              if(sh){/* shade exists, just show it — no full re-render needed */}
+              else{renderView(CFG.views[state.view]);
+                /* after re-render, enforce gap state so it isn't inadvertently reset */
+                const gs2=document.getElementById('gapstrip'),gt2=document.getElementById('gapTogBtn');
+                if(!vs.showGap){if(gs2)gs2.style.display='none';if(gt2){gt2.classList.remove('btn-on');gt2.style.opacity='0.4';gt2.style.color='var(--soft)';}}
+              }
+            }};}
       }
     })();
 
@@ -1466,7 +1522,14 @@ function vScale(v){
           cTog.onclick=()=>{vs.showCampaign=!vs.showCampaign;styleBtn(cTog,vs.showCampaign);
             document.getElementById('campstrip').style.display=vs.showCampaign?'':'none';
             const sh=document.getElementById('campaignShade');if(sh)sh.style.display=vs.showCampaign?'':'none';
-            if(vs.showCampaign)renderView(CFG.views[state.view]);};}
+            if(vs.showCampaign){
+              if(sh){/* shade exists, just show it — no full re-render needed */}
+              else{renderView(CFG.views[state.view]);
+                /* after re-render, enforce gap state so it isn't inadvertently reset */
+                const gs2=document.getElementById('gapstrip'),gt2=document.getElementById('gapTogBtn');
+                if(!vs.showGap){if(gs2)gs2.style.display='none';if(gt2){gt2.classList.remove('btn-on');gt2.style.opacity='0.4';gt2.style.color='var(--soft)';}}
+              }
+            }};}
       }
     })();
 
@@ -1568,7 +1631,14 @@ function vRank(v){
           cTog.onclick=()=>{vs.showCampaign=!vs.showCampaign;styleBtn(cTog,vs.showCampaign);
             document.getElementById('campstrip').style.display=vs.showCampaign?'':'none';
             const sh=document.getElementById('campaignShade');if(sh)sh.style.display=vs.showCampaign?'':'none';
-            if(vs.showCampaign)renderView(CFG.views[state.view]);};}
+            if(vs.showCampaign){
+              if(sh){/* shade exists, just show it — no full re-render needed */}
+              else{renderView(CFG.views[state.view]);
+                /* after re-render, enforce gap state so it isn't inadvertently reset */
+                const gs2=document.getElementById('gapstrip'),gt2=document.getElementById('gapTogBtn');
+                if(!vs.showGap){if(gs2)gs2.style.display='none';if(gt2){gt2.classList.remove('btn-on');gt2.style.opacity='0.4';gt2.style.color='var(--soft)';}}
+              }
+            }};}
       }
     })();
 
@@ -1681,7 +1751,7 @@ function vRank(v){
       drawByType(vs.ct,ms,sliceList(list,vs.rs,vs.re),{unitLabel:'%',stackMode:vs.stackMode});
       nt.innerHTML='';
     }
-    renderAlignedGap(chart,months,vs.rs,vs.re,[{label:'Gap (1순위)',values:gapRow(jk1,sr1,'%')||[]},{label:'Gap (1+2+3순위)',values:gapRow(jk3,sr3,'%')||[]}]);
+    renderAlignedGap(chart,months,vs.rs,vs.re,[{label:'Gap (1순위)',values:gapRow(jk1,sr1,'%')||[]},{label:'Gap (1+2+3순위)',values:gapRow(jk3,sr3,'%')||[]}],vs.ct==='bar');
     renderCampaignOverlay(chart,months,vs.rs,vs.re,shownLabels,vs.ct);
   }
   paint();
@@ -1702,6 +1772,8 @@ function vStack(v){
           <span class="ctrl-label">차트 형태</span><select class="msel" id="ctSel">${ctSelectHTML(v.recommended,vs)}</select>
           <button class="btn" id="campTogBtn">캠페인</button><button class="btn" id="gapTogBtn">잡코리아-사람인 Gap</button><button class="btn" id="png">PNG</button>
         </div>
+        ${campaignStripHTML()}
+        ${gapStripHTML(v.section,vs.ct,b.months,vs.rs,vs.re,[{label:'Gap',values:gapRow(b.series.find(s=>s.label.includes(JK)),b.series.find(s=>s.label.includes(SR)),'%')||[]}])}
         <div class="chart" id="ch"></div>
         <div class="note" id="nt"></div>
       </div>${tableCard(b)}`;
@@ -1727,7 +1799,14 @@ function vStack(v){
           cTog.onclick=()=>{vs.showCampaign=!vs.showCampaign;styleBtn(cTog,vs.showCampaign);
             document.getElementById('campstrip').style.display=vs.showCampaign?'':'none';
             const sh=document.getElementById('campaignShade');if(sh)sh.style.display=vs.showCampaign?'':'none';
-            if(vs.showCampaign)renderView(CFG.views[state.view]);};}
+            if(vs.showCampaign){
+              if(sh){/* shade exists, just show it — no full re-render needed */}
+              else{renderView(CFG.views[state.view]);
+                /* after re-render, enforce gap state so it isn't inadvertently reset */
+                const gs2=document.getElementById('gapstrip'),gt2=document.getElementById('gapTogBtn');
+                if(!vs.showGap){if(gs2)gs2.style.display='none';if(gt2){gt2.classList.remove('btn-on');gt2.style.opacity='0.4';gt2.style.color='var(--soft)';}}
+              }
+            }};}
       }
     })();
 
@@ -1746,6 +1825,13 @@ function vStack(v){
       drawByType(vs.ct,b.months.slice(vs.rs,vs.re+1),sliceList(opts,vs.rs,vs.re),{unitLabel:'%',percentLike:true,palette:OPTION_PALETTE,stackMode:vs.stackMode});
       nt.innerHTML='';
     }
+    {const jkS=b.series.find(s=>s.label.includes(JK)),srS=b.series.find(s=>s.label.includes(SR));
+     renderAlignedGap(chart,b.months,vs.rs,vs.re,[{label:'Gap',values:gapRow(jkS,srS,'%')||[]}]);}
+    {const campBrands=CAMPAIGNS.length?[...new Set(CAMPAIGNS.map(c=>c.brand))]:[];
+     /* views without brand dropdown always show all campaign brands */
+     const noBrandDd=!document.getElementById('brandDd');
+     const visL=noBrandDd?campBrands:opts.filter(s=>!vs.hidden.has(s.label)).map(s=>s.label);
+     renderCampaignOverlay(chart,b.months,vs.rs,vs.re,visL,vs.ct);}
   }
   paint();
 }
@@ -1785,6 +1871,8 @@ function vSummary(v){
           <span class="ctrl-sep"></span>${unitSegHTML(enabled)}
           <button class="btn" id="campTogBtn">캠페인</button><button class="btn" id="gapTogBtn">잡코리아-사람인 Gap</button><button class="btn" id="png">PNG</button>
         </div>
+        ${campaignStripHTML()}
+        ${gapStripHTML(v.section,vs.ct,months,vs.rs,vs.re,[{label:'Gap',values:gapRow(tBlk&&tBlk.series.find(s=>s.label.includes(JK)),tBlk&&tBlk.series.find(s=>s.label.includes(SR)),'%')||[]}])}
         <div class="chart" id="ch"></div>
         <div class="note" id="nt"></div>
       </div>${tableCardMulti([tBlk,bBlk,mBlk].filter(Boolean),v.title)}`;
@@ -1812,7 +1900,14 @@ function vSummary(v){
           cTog.onclick=()=>{vs.showCampaign=!vs.showCampaign;styleBtn(cTog,vs.showCampaign);
             document.getElementById('campstrip').style.display=vs.showCampaign?'':'none';
             const sh=document.getElementById('campaignShade');if(sh)sh.style.display=vs.showCampaign?'':'none';
-            if(vs.showCampaign)renderView(CFG.views[state.view]);};}
+            if(vs.showCampaign){
+              if(sh){/* shade exists, just show it — no full re-render needed */}
+              else{renderView(CFG.views[state.view]);
+                /* after re-render, enforce gap state so it isn't inadvertently reset */
+                const gs2=document.getElementById('gapstrip'),gt2=document.getElementById('gapTogBtn');
+                if(!vs.showGap){if(gs2)gs2.style.display='none';if(gt2){gt2.classList.remove('btn-on');gt2.style.opacity='0.4';gt2.style.color='var(--soft)';}}
+              }
+            }};}
       }
     })();
 
@@ -1855,6 +1950,12 @@ function vSummary(v){
       function unitLabel(){return vs.unit==='5점평균'?'점':'%';}
       nt.innerHTML='';
     }
+    {const jkS=tBlk&&tBlk.series.find(s=>s.label.includes(JK)),srS=tBlk&&tBlk.series.find(s=>s.label.includes(SR));
+     renderAlignedGap(chart,months,vs.rs,vs.re,[{label:'Gap',values:gapRow(jkS,srS,'%')||[]}]);}
+    {const campBrands=CAMPAIGNS.length?[...new Set(CAMPAIGNS.map(c=>c.brand))]:[];
+     const noBrandDd=!document.getElementById('brandDd');
+     const visL=noBrandDd?campBrands:shown.filter(b=>campBrands.some(cb=>b===cb||b.includes(cb)||cb.includes(b)));
+     renderCampaignOverlay(chart,months,vs.rs,vs.re,noBrandDd?campBrands:shown,vs.ct);}
   }
   paint();
 }
@@ -1867,6 +1968,9 @@ function vRadarOne(v){
   const attrs=blocks[0].series.map(s=>s.label).filter(l=>!l.includes('없음')&&!l.includes('미인지'));
   vs.selAttr=vs.selAttr||attrs[0];
   if(vs.attrHidden.size===0)attrs.forEach(a=>{if(a!==vs.selAttr)vs.attrHidden.add(a);});
+  /* sync vs.hidden for attrDd rendering: mark all attrs except selAttr as hidden */
+  /* (vs.hidden is used by stmtDropHTML to determine checked/label state for attrDd) */
+  function syncAttrHidden(){attrs.forEach(a=>{if(a===vs.selAttr)vs.hidden.delete(a);else vs.hidden.add(a);});}
   /* default: top-5 brands by latest-month value of the selected attribute */
   (function(){
     if(brandsAll.length<=5)return;
@@ -1906,7 +2010,14 @@ function vRadarOne(v){
         <div class="note" id="nt"></div>
       </div>${tableCardMulti(blocks,v.title)}`;
     wireBrandDrop(body,brandsAll,vs,draw,'brandDd');
-    if(showAttrPicker)wireStmtDrop(body,attrs,vs,()=>{vs.selAttr=attrs.find(a=>!vs.attrHidden.has(a))||attrs[0];paint();},'attrDd',true);
+    if(showAttrPicker){
+      syncAttrHidden();  /* ensure vs.hidden reflects selAttr so label shows attribute name */
+      wireStmtDrop(body,attrs,vs,()=>{
+        vs.selAttr=attrs.find(a=>!vs.hidden.has(a))||attrs[0];
+        syncAttrHidden();
+        paint();
+      },'attrDd',true);
+    }
     wirePeriod(body,months,vs.ct,vs,draw);
     wireCtSelect(body,vs,v.recommended,()=>{paint();});
     document.getElementById('png').onclick=()=>dlPNG(chart);
@@ -1929,7 +2040,14 @@ function vRadarOne(v){
           cTog.onclick=()=>{vs.showCampaign=!vs.showCampaign;styleBtn(cTog,vs.showCampaign);
             document.getElementById('campstrip').style.display=vs.showCampaign?'':'none';
             const sh=document.getElementById('campaignShade');if(sh)sh.style.display=vs.showCampaign?'':'none';
-            if(vs.showCampaign)renderView(CFG.views[state.view]);};}
+            if(vs.showCampaign){
+              if(sh){/* shade exists, just show it — no full re-render needed */}
+              else{renderView(CFG.views[state.view]);
+                /* after re-render, enforce gap state so it isn't inadvertently reset */
+                const gs2=document.getElementById('gapstrip'),gt2=document.getElementById('gapTogBtn');
+                if(!vs.showGap){if(gs2)gs2.style.display='none';if(gt2){gt2.classList.remove('btn-on');gt2.style.opacity='0.4';gt2.style.color='var(--soft)';}}
+              }
+            }};}
       }
     })();
 
@@ -1953,13 +2071,15 @@ function vRadarOne(v){
       if(chart)chart.dispose();chart=initChart('ch');
       chart.setOption({tooltip:{trigger:'item'},
         legend:{type:'scroll',bottom:0,icon:'roundRect',itemWidth:12,itemHeight:6,textStyle:{fontSize:11,color:'#3A4055'}},
-        graphic:[unitBadge('%'),{type:'text',left:'center',top:6,style:{text:months[mi]+' 이미지 프로파일',fontSize:12,fill:'#6B7186',fontWeight:600}}],
+        graphic:[unitBadge('%'),{type:'text',left:'center',top:6,style:{text:months[mi]+' 기준',fontSize:12,fill:'#6B7186',fontWeight:600}}],
         radar:{indicator,center:['50%','50%'],radius:'58%',axisName:{fontSize:10,color:'#3A4055'},
           splitLine:{lineStyle:{color:'#ECEAE3'}},splitArea:{areaStyle:{color:['#fff','#FAF9F6']}},axisLine:{lineStyle:{color:'#E0DCD2'}}},
         series:[{type:'radar',data,symbolSize:3,
           emphasis:{focus:'self'},
           blur:{lineStyle:{opacity:0.3},itemStyle:{opacity:0.3},areaStyle:{opacity:0.06}}}]});
       nt.innerHTML='';
+      /* disable campaign for radar (single-month view) */
+      renderCampaignOverlay(null,months,vs.rs,vs.re,[],vs.ct);
       return;
     }
     const list=blocks.filter(b=>!vs.hidden.has(brandOf(b.title))).map((b,i)=>{
@@ -2034,7 +2154,14 @@ function vBPI(v){
           cTog.onclick=()=>{vs.showCampaign=!vs.showCampaign;styleBtn(cTog,vs.showCampaign);
             document.getElementById('campstrip').style.display=vs.showCampaign?'':'none';
             const sh=document.getElementById('campaignShade');if(sh)sh.style.display=vs.showCampaign?'':'none';
-            if(vs.showCampaign)renderView(CFG.views[state.view]);};}
+            if(vs.showCampaign){
+              if(sh){/* shade exists, just show it — no full re-render needed */}
+              else{renderView(CFG.views[state.view]);
+                /* after re-render, enforce gap state so it isn't inadvertently reset */
+                const gs2=document.getElementById('gapstrip'),gt2=document.getElementById('gapTogBtn');
+                if(!vs.showGap){if(gs2)gs2.style.display='none';if(gt2){gt2.classList.remove('btn-on');gt2.style.opacity='0.4';gt2.style.color='var(--soft)';}}
+              }
+            }};}
       }
     })();
 
