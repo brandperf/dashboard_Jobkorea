@@ -600,7 +600,7 @@ function campaignsForView(months,s,e,visibleBrands){
     return c.startYM<=endYM && cEnd>=startYM;
   });
 }
-function renderCampaignOverlay(chartInst,months,s,e,visibleBrands,ct){
+function renderCampaignOverlay(chartInst,months,s,e,visibleBrands,ct,forceMonthPx){
   const strip=document.getElementById('campaignStrip');
   const chEl=document.getElementById('ch');
   const campWrap=document.getElementById('campstrip');
@@ -632,38 +632,61 @@ function renderCampaignOverlay(chartInst,months,s,e,visibleBrands,ct){
   let boundaryGap=false;
   try{boundaryGap=chartInst.getOption()?.xAxis?.[0]?.boundaryGap===true;}catch(_){}
 
-  /* Get exact pixel x-positions for each visible month directly from ECharts */
+  /* Get exact pixel x-positions for each visible month directly from ECharts.
+     Force resize first to ensure chart knows its current container dimensions. */
+  try{chartInst.resize();}catch(_){}
   const monthPx=[];
   let pixelOk=false;
-  try{
-    for(let i=0;i<N;i++)monthPx.push(chartInst.convertToPixel({xAxisIndex:0},i));
-    pixelOk=monthPx.length===N&&monthPx.every(p=>typeof p==='number'&&isFinite(p));
-  }catch(_){}
+  if(forceMonthPx&&forceMonthPx.length===N){
+    /* caller pre-computed month positions (e.g. rank bar charts with custom x-axis) */
+    monthPx.push(...forceMonthPx);
+    pixelOk=true;
+  }else{
+    try{
+      for(let i=0;i<N;i++)monthPx.push(chartInst.convertToPixel({xAxisIndex:0},i));
+      pixelOk=monthPx.length===N
+        &&monthPx.every(p=>typeof p==='number'&&isFinite(p))
+        &&(N<2||monthPx.some(p=>p!==monthPx[0])); /* all-same = degenerate layout */
+    }catch(_){}
+  }
   /* Right edge of chart plot area (clamp all shading to this) */
   const rightEdgePx=pixelOk&&N>0
     ?(boundaryGap&&N>=2?monthPx[N-1]+(monthPx[N-1]-monthPx[N-2])/2:monthPx[N-1])
     :chartW-GRID_R-CAMP_MARGIN;
 
   /* Map a YM value to its pixel x-position.
-     Uses exact monthPx lookup with linear interpolation for in-between dates.
-     Extrapolates right for endYM+1 (= "start of next month after campaign end"). */
+     Primary: ECharts convertToPixel (exact). Fallback: math with corrected gridW. */
   function pxForYM(ym){
-    if(!pixelOk||N===0)return 0;
-    const PX_ADJ=8; /* shift right to align with chart month labels */
-    if(ym<=visYMs[0])return monthPx[0]-CAMP_MARGIN+PX_ADJ;
-    for(let i=1;i<N;i++){
-      if(visYMs[i]===ym)return monthPx[i]-CAMP_MARGIN+PX_ADJ;
-      if(visYMs[i]>ym){
-        const frac=(ym-visYMs[i-1])/(visYMs[i]-visYMs[i-1]);
-        return monthPx[i-1]+frac*(monthPx[i]-monthPx[i-1])-CAMP_MARGIN+PX_ADJ;
+    const PX_ADJ=8; /* empirical right-shift to align with chart month labels */
+    if(pixelOk&&N>0){
+      if(ym<=visYMs[0])return monthPx[0]-CAMP_MARGIN+PX_ADJ;
+      for(let i=1;i<N;i++){
+        if(visYMs[i]===ym)return monthPx[i]-CAMP_MARGIN+PX_ADJ;
+        if(visYMs[i]>ym){
+          const frac=(ym-visYMs[i-1])/(visYMs[i]-visYMs[i-1]||1);
+          return monthPx[i-1]+frac*(monthPx[i]-monthPx[i-1])-CAMP_MARGIN+PX_ADJ;
+        }
       }
+      if(N>=2){
+        const step=(monthPx[N-1]-monthPx[N-2])/(visYMs[N-1]-visYMs[N-2]||1);
+        const px=monthPx[N-1]+(ym-visYMs[N-1])*step;
+        return Math.min(px,rightEdgePx)-CAMP_MARGIN+PX_ADJ;
+      }
+      return rightEdgePx-CAMP_MARGIN+PX_ADJ;
     }
+    /* Fallback: math formula. gridW = containerW - GRID_L - GRID_R (no CHART_PAD bias) */
+    if(N===0)return 0;
+    const fW=chEl.offsetWidth||chartW, fgW=Math.max(1,fW-GRID_L-GRID_R);
+    let fi=0;
     if(N>=2){
-      const step=(monthPx[N-1]-monthPx[N-2])/(visYMs[N-1]-visYMs[N-2]);
-      const px=monthPx[N-1]+(ym-visYMs[N-1])*step;
-      return Math.min(px,rightEdgePx)-CAMP_MARGIN+PX_ADJ;
+      if(ym<=visYMs[0])fi=0;
+      else if(ym>=visYMs[N-1])fi=N-1+(ym-visYMs[N-1])/(visYMs[N-1]-visYMs[N-2]||1);
+      else{for(let i=1;i<N;i++){if(visYMs[i]>=ym){fi=(i-1)+(ym-visYMs[i-1])/(visYMs[i]-visYMs[i-1]||1);break;}}}
     }
-    return rightEdgePx-CAMP_MARGIN+PX_ADJ;
+    const frac=Math.max(0,fi)/(N>1?N-1:1);
+    if(boundaryGap){const band=fgW/N;return GRID_L+band*0.5+frac*(fgW-band)-CAMP_MARGIN+PX_ADJ;}
+    const pad=fgW*0.03,usable=fgW-pad*2;
+    return GRID_L+pad+frac*usable-CAMP_MARGIN+PX_ADJ;
   }
   /* shade inside #ch — .card has no position:relative so its overflow:hidden
      does NOT clip absolute children whose containing block is #ch.
@@ -1750,7 +1773,22 @@ function vRank(v){
       nt.innerHTML='';
     }
     renderAlignedGap(chart,months,vs.rs,vs.re,[{label:'Gap (1순위)',values:gapRow(jk1,sr1,'%')||[]},{label:'Gap (1+2+3순위)',values:gapRow(jk3,sr3,'%')||[]}],vs.ct==='bar');
-    renderCampaignOverlay(chart,months,vs.rs,vs.re,shownLabels,vs.ct);
+    /* For rank bar chart: x-axis has [n_brands+1]*N_months-1 cats, not N months.
+       Month i center = cat index i*(n+1)+(n-1)/2. Pre-compute and pass to overlay. */
+    if(vs.ct==='bar'){
+      const n=shownLabels.length;
+      const N2=vs.re-vs.rs+1;
+      const rankPx=[];let rOk=true;
+      for(let i=0;i<N2;i++){
+        const ci=i*(n+1)+(n-1)/2;
+        try{const px=chart.convertToPixel({xAxisIndex:0},ci);
+          if(typeof px==='number'&&isFinite(px))rankPx.push(px);else{rOk=false;break;}
+        }catch(_){rOk=false;break;}
+      }
+      renderCampaignOverlay(chart,months,vs.rs,vs.re,shownLabels,vs.ct,rOk?rankPx:null);
+    }else{
+      renderCampaignOverlay(chart,months,vs.rs,vs.re,shownLabels,vs.ct);
+    }
   }
   paint();
 }
