@@ -87,14 +87,19 @@ h2.qt{margin:0;font-size:23px;font-weight:750;letter-spacing:-.015em;line-height
 .qnote{font-size:11px;color:var(--soft);padding:10px 16px 12px;border-top:1px solid var(--line2);line-height:1.6;background:var(--paper)}
 @keyframes chartBarIn{0%{opacity:0;transform:translateY(14px) scaleY(0.95)}60%{opacity:1}100%{opacity:1;transform:translateY(0) scaleY(1)}}
 .chart-bar-enter{animation:chartBarIn 0.55s cubic-bezier(0.34,1.56,0.64,1) both}
-.gapstrip{padding:0 0 6px;border-bottom:1px solid var(--line2);margin-bottom:4px}
-.gapstrip .gaph{font-size:11.5px;font-weight:700;color:var(--ink2);margin-bottom:4px;padding:8px 16px 0}
-.gapstrip .gap-body{padding:0 16px 4px}
+.gapstrip{border-radius:8px;margin:8px 8px 2px;padding:6px 0}
+.gapstrip .gap-body{padding:0 16px 2px}
 .gapstrip .gap-body.gap-collapsed{display:none}
+.campstrip{background:#F0F2F7;border:0.5px solid #D8DCE8;border-radius:8px;margin:16px 8px 6px;padding:6px 0}
+.campstrip .camp-body{padding:2px 0 4px}
+.campstrip .camp-body.camp-collapsed{display:none}
+.strip-title{font-size:11.5px;font-weight:700;color:#5A607A;padding:2px 16px 4px}
+.gapstrip .strip-title{color:var(--ink2)}
+.btn-on{background:rgba(31,79,224,0.1)!important;color:var(--jk)!important;border-color:rgba(31,79,224,0.35)!important}
 @media(max-width:1200px){.kpis{grid-template-columns:1fr 1fr}}
 .up{color:var(--up)} .down{color:var(--down)} .flat{color:var(--soft)}
 
-.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);margin-bottom:16px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);margin-bottom:16px;overflow:hidden}
 .card-h{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 16px;border-bottom:1px solid var(--line2);flex-wrap:wrap}
 .card-h .t{font-size:14px;font-weight:700}
 .ctrls{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
@@ -540,38 +545,69 @@ function gapStripHTML(section,ct,months,s,e,rows){
   const ee=e;
   const validRows=rows.filter(r=>r&&r.values&&r.values.slice(s,ee+1).some(v=>v!=null));
   if(!validRows.length)return'';
-  return `<div class="gapstrip" data-s="${s}" data-e="${ee}">
-    <div class="gaph" onclick="var b=this.nextElementSibling;var h=b.style.display==='none';b.style.display=h?'':'none';this.querySelector('.gap-tog').textContent=h?'▼':'▶'" style="cursor:pointer;user-select:none">
-      <span class="gap-tog">▼</span> 잡코리아 − 사람인 Gap
-    </div>
+  return `<div class="gapstrip" id="gapstrip" data-s="${s}" data-e="${ee}">
+    <div class="strip-title">잡코리아 − 사람인 Gap</div>
     <div class="gap-body"><div id="gapCells" style="position:relative"></div></div>
   </div>`;
 }
-/* ===== Campaign overlay (Style A: period shading + top badges) ===== */
+/* ===== Campaign overlay (Style A: period shading + slim top badges) ===== */
 function campaignStripHTML(){
-  return `<div id="campaignStrip" style="position:relative;width:100%"></div>`;
+  return `<div class="campstrip" id="campstrip">
+    <div class="strip-title">캠페인</div>
+    <div class="camp-body"><div id="campaignStrip" style="position:relative;width:100%"></div></div>
+  </div>`;
+}
+/* brand → color (rgb tuple + solid hex). Falls back to a palette for others. */
+const CAMPAIGN_COLORS={
+  '잡코리아':{rgb:'31,79,224',   solid:'#1F4FE0', soft:'#E6ECFC'},
+  '사람인'  :{rgb:'41,168,224',  solid:'#29A8E0', soft:'#E1F2FB'},
+  '원티드'  :{rgb:'14,138,95',   solid:'#0E8A5F', soft:'#E1F3EC'},
+  '벼룩시장':{rgb:'194,84,10',   solid:'#C2540A', soft:'#FBEDE2'}
+};
+const CAMPAIGN_FALLBACK=[
+  {rgb:'138,79,194',solid:'#8A4FC2',soft:'#F1E9F9'},
+  {rgb:'194,157,10',solid:'#C29D0A',soft:'#FaF3DA'},
+  {rgb:'11,120,138',solid:'#0B788A',soft:'#E0F0F2'}
+];
+function campaignColor(brand,idx){
+  for(const k in CAMPAIGN_COLORS){if(brand.includes(k))return CAMPAIGN_COLORS[k];}
+  return CAMPAIGN_FALLBACK[idx%CAMPAIGN_FALLBACK.length];
 }
 function campaignsForView(months,s,e,visibleBrands){
   if(!CAMPAIGNS.length)return[];
   const startYM=monthLabelToYM(months[s]), endYM=monthLabelToYM(months[e]);
   if(startYM==null||endYM==null)return[];
   return CAMPAIGNS.filter(c=>{
-    const shown=visibleBrands.some(b=>b.includes(c.brand)||c.brand.includes(b));
+    /* strict brand match: campaign brand must correspond to a currently selected brand */
+    const shown=visibleBrands.some(b=>b===c.brand||b.includes(c.brand)||c.brand.includes(b));
     if(!shown)return false;
     const cEnd=c.endYM==null?endYM:c.endYM;
     return c.startYM<=endYM && cEnd>=startYM;
   });
 }
-function renderCampaignOverlay(chartInst,months,s,e,visibleBrands){
+function renderCampaignOverlay(chartInst,months,s,e,visibleBrands,ct){
   const strip=document.getElementById('campaignStrip');
   const chEl=document.getElementById('ch');
+  const campWrap=document.getElementById('campstrip');
+  const campTog=document.getElementById('campTogBtn');
+  if(ct==='pie'||ct==='radar'){
+    if(strip){strip.innerHTML='';strip.style.height='0px';}
+    const _sh=document.getElementById('campaignShade');if(_sh)_sh.remove();
+    if(campWrap)campWrap.style.display='none';
+    if(campTog){campTog.disabled=true;campTog.style.opacity='0.3';campTog.style.color='var(--soft)';campTog.classList.remove('btn-on');}
+    return;
+  }
+  if(campTog){campTog.disabled=false;campTog.style.opacity='';campTog.style.color='';}
   if(!strip||!chEl||!chartInst)return;
   const camps=campaignsForView(months,s,e,visibleBrands);
   strip.innerHTML='';
   const oldSh=document.getElementById('campaignShade'); if(oldSh)oldSh.remove();
-  if(!camps.length){strip.style.height='0px';return;}
+  if(!camps.length||!vs.showCampaign){
+    strip.style.height='0px';
+    return;
+  }
   const chartW=chEl.offsetWidth; if(chartW<100){strip.style.height='0px';return;}
-  const GRID_L=48, GRID_R=24, CHART_PAD=8;
+  const GRID_L=48, GRID_R=24, CHART_PAD=8, CAMP_MARGIN=8;
   const gridW=chartW-CHART_PAD*2-GRID_L-GRID_R;
   const N=e-s+1;
   const startYM=monthLabelToYM(months[s]), endYM=monthLabelToYM(months[e]);
@@ -582,49 +618,128 @@ function renderCampaignOverlay(chartInst,months,s,e,visibleBrands){
     const frac=(endYM===startYM)?0:(clamped-startYM)/(endYM-startYM);
     if(boundaryGap){
       const band=gridW/N;
-      return CHART_PAD+GRID_L+band*0.5+frac*(gridW-band);
+      return CHART_PAD+GRID_L+band*0.5+frac*(gridW-band)-CAMP_MARGIN;
     }
     const pad=gridW*0.03, usable=gridW-pad*2;
-    return CHART_PAD+GRID_L+pad+frac*usable;
+    return CHART_PAD+GRID_L+pad+frac*usable-CAMP_MARGIN;
   }
+  /* shade inside #ch — .card has no position:relative so its overflow:hidden
+     does NOT clip absolute children whose containing block is #ch.
+     Shade extends upward (negative shadeTop) to cover gapstrip area.        */
+  chEl.style.position='relative';
   const shade=document.createElement('div');
   shade.id='campaignShade';
   shade.style.cssText='position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:1';
-  chEl.style.position='relative';
   chEl.appendChild(shade);
   const chartH=chEl.offsetHeight||360;
   const GRID_T=28, GRID_B=54;
-  const sorted=camps.slice().sort((a,b)=>a.startYM-b.startYM);
-  const rowEnds=[];
-  const badges=[];
-  const BADGE_MINW=120, BADGE_H=38, ROW_GAP=6;
-  sorted.forEach(c=>{
-    const x0=pxForYM(c.startYM);
-    const x1=pxForYM(c.endYM==null?endYM:c.endYM);
-    const w=Math.max(BADGE_MINW, x1-x0);
-    const jk=c.brand.includes('잡코리아');
-    const col=jk?'31,79,224':'41,168,224';
-    const sh=document.createElement('div');
-    sh.style.cssText=`position:absolute;left:${x0}px;top:${GRID_T}px;width:${Math.max(2,x1-x0)}px;`+
-      `height:${chartH-GRID_T-GRID_B}px;background:rgba(${col},0.09);border-left:1px dashed rgba(${col},0.5);border-right:1px dashed rgba(${col},0.5)`;
-    shade.appendChild(sh);
-    let row=0; while(rowEnds[row]!=null && rowEnds[row]>x0-4)row++;
-    rowEnds[row]=x0+w;
-    badges.push({c,x0,w,row,jk});
+  let shadeTop=GRID_T, shadeH=chartH-GRID_T-GRID_B;
+  try{
+    const gapEl=document.getElementById('gapstrip');
+    if(gapEl){
+      const gapR=gapEl.getBoundingClientRect(), chR=chEl.getBoundingClientRect();
+      /* use gapstrip BOTTOM so shading starts below the Gap numbers row */
+      const gapOffset=gapR.bottom-chR.top; /* small negative: just below gapstrip */
+      shadeTop=Math.min(GRID_T, gapOffset);
+      shadeH=chartH-GRID_B-shadeTop;
+    }
+  }catch(_){}
+  /* ── Group camps by brand, each brand = 1 row ── */
+  const brandOrder=[], brandMap={};
+  camps.forEach(c=>{
+    if(!brandMap[c.brand]){brandMap[c.brand]=[];brandOrder.push(c.brand);}
+    brandMap[c.brand].push(c);
   });
-  const nRows=rowEnds.length||1;
+  const BADGE_H=20, ROW_GAP=4;
+  const nRows=brandOrder.length;
   strip.style.height=(nRows*(BADGE_H+ROW_GAP)+4)+'px';
   strip.style.marginBottom='2px';
-  badges.forEach(({c,x0,w,row,jk})=>{
-    const b=document.createElement('div');
-    const bg=jk?'#E6F1FB':'#E1F0FA', bd=jk?'#185FA5':'#1E7FB8', tc=jk?'#0C447C':'#0A5580', sc=jk?'#185FA5':'#1E7FB8';
-    b.style.cssText=`position:absolute;left:${x0}px;top:${row*(BADGE_H+ROW_GAP)}px;width:${w}px;`+
-      `box-sizing:border-box;background:${bg};border:0.5px solid ${bd};border-radius:8px;padding:4px 8px;overflow:hidden`;
-    const costPart=c.cost&&c.cost!=='-'?` · ${c.cost}`:'';
-    b.innerHTML=`<div style="font-size:10.5px;font-weight:600;color:${tc};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${c.name}</div>`+
-      `<div style="font-size:9.5px;color:${sc};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${c.type||''}${costPart}</div>`;
-    b.title=`${c.brand} · ${c.name}\n${c.type||''} · ${c.schedRaw}${c.cost?` · ${c.cost}`:''}`;
-    strip.appendChild(b);
+
+  /* ECharts-style tooltip div (shared) */
+  let tt=document.getElementById('campTT');
+  if(!tt){tt=document.createElement('div');tt.id='campTT';
+    tt.style.cssText='display:none;position:fixed;z-index:9999;pointer-events:none;'+
+      'background:#fff;border:1px solid #E0DCD2;border-radius:8px;box-shadow:0 4px 16px rgba(0,0,0,.12);'+
+      'padding:10px 14px;min-width:160px;font-size:12px;line-height:1.75;color:#3A4055';
+    document.body.appendChild(tt);}
+
+  /* ── Cluster overlapping campaigns within same brand ── */
+  function clusterOverlap(arr){
+    const sorted=arr.slice().sort((a,b)=>a.startYM-b.startYM);
+    const clusters=[];
+    sorted.forEach(c=>{
+      const cEnd=c.endYM==null?endYM:c.endYM;
+      /* try to merge into last cluster that this overlaps */
+      let merged=false;
+      for(let i=clusters.length-1;i>=0;i--){
+        const cl=clusters[i];
+        if(c.startYM<=cl.endYM){
+          cl.camps.push(c);
+          if(cEnd>cl.endYM)cl.endYM=cEnd;
+          merged=true;break;
+        }
+      }
+      if(!merged)clusters.push({camps:[c],startYM:c.startYM,endYM:cEnd});
+    });
+    return clusters;
+  }
+
+  const LBL_W=CHART_PAD+GRID_L-4;
+  brandOrder.forEach((brand,rowIdx)=>{
+    const col=campaignColor(brand,rowIdx);
+    const y=rowIdx*(BADGE_H+ROW_GAP);
+    /* brand label in left margin */
+    const lbl=document.createElement('div');
+    lbl.style.cssText=`position:absolute;left:0;top:${y}px;width:${LBL_W}px;height:${BADGE_H}px;`+
+      `display:flex;align-items:center;justify-content:flex-end;padding-right:4px;`+
+      `font-size:9px;font-weight:700;color:${col.solid};white-space:nowrap;overflow:hidden`;
+    lbl.textContent=brand;
+    strip.appendChild(lbl);
+
+    const clusters=clusterOverlap(brandMap[brand]);
+    clusters.forEach(cl=>{
+      const x0=pxForYM(cl.startYM);
+      const x1=pxForYM(cl.endYM);
+      const totalW=Math.max(4,x1-x0);
+      const n=cl.camps.length;
+      /* shading for each individual campaign period */
+      cl.camps.forEach(c=>{
+        const sx0=pxForYM(c.startYM), sx1=pxForYM(c.endYM==null?endYM:c.endYM);
+        const w=Math.max(2,sx1-sx0);
+        const sh=document.createElement('div');
+        sh.style.cssText=`position:absolute;left:${sx0+CAMP_MARGIN}px;top:${shadeTop}px;width:${w}px;height:${shadeH}px;`+
+          `background:rgba(${col.rgb},0.09);`+
+          `border-left:1px dashed rgba(${col.rgb},0.55);border-right:1px dashed rgba(${col.rgb},0.55)`;
+        shade.appendChild(sh);
+      });
+      /* one badge, n-divided segments */
+      const badge=document.createElement('div');
+      badge.style.cssText=`position:absolute;left:${x0}px;top:${y}px;width:${totalW}px;height:${BADGE_H}px;`+
+        `box-sizing:border-box;display:flex;background:${col.soft};border:0.5px solid ${col.solid};border-radius:6px;overflow:hidden;cursor:default`;
+      cl.camps.forEach((c,ci)=>{
+        const seg=document.createElement('div');
+        const segW=totalW/n;
+        seg.style.cssText=`flex:0 0 ${segW}px;width:${segW}px;height:100%;`+
+          `display:flex;align-items:center;padding:0 5px;overflow:hidden;box-sizing:border-box;`+
+          (ci<n-1?`border-right:0.5px solid rgba(${col.rgb},0.35);`:'');
+        seg.innerHTML=`<span style="font-size:9.5px;color:${col.solid};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${c.name}</span>`;
+        /* individual segment tooltip */
+        const ttHTML=`<div style="font-weight:700;color:${col.solid};margin-bottom:4px">${c.brand}</div>`+
+          `<div><span style="color:#888">캠페인명</span>&nbsp;&nbsp;${c.name}</div>`+
+          `<div><span style="color:#888">종류</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;${c.type||'–'}</div>`+
+          `<div><span style="color:#888">일정</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;${c.schedRaw}</div>`+
+          `<div><span style="color:#888">매체비</span>&nbsp;&nbsp;&nbsp;&nbsp;${c.cost||'–'}</div>`;
+        seg.addEventListener('mouseenter',()=>{
+          tt.innerHTML=ttHTML;tt.style.display='block';
+          const r=seg.getBoundingClientRect();
+          tt.style.left=Math.min(r.left,window.innerWidth-200)+'px';
+          tt.style.top=(r.top-tt.offsetHeight-8)+'px';
+        });
+        seg.addEventListener('mouseleave',()=>{tt.style.display='none';});
+        badge.appendChild(seg);
+      });
+      strip.appendChild(badge);
+    });
   });
 }
 
@@ -641,7 +756,7 @@ function renderAlignedGap(chartInst,allMonths,s,e,gapRows){
     if(!chartEl)return;
     const chartW=chartEl.offsetWidth;
     if(chartW<100)return;
-    const CELLS_PAD=16, GRID_L=48, GRID_R=24, CHART_PAD=8;
+    const CELLS_PAD=24, GRID_L=48, GRID_R=24, CHART_PAD=8;
     const gridW=chartW-CHART_PAD*2-GRID_L-GRID_R;
     const N=e-s+1;
     let boundaryGap=false;
@@ -1158,7 +1273,7 @@ function applyTop5Default(seriesList,months,vs,topN){
 
 function renderView(v){
   vs={ct:v.recommended||'line',isRec:true,unit:(v.metrics&&v.metrics[0])||'%',month:null,rs:null,re:null,
-      hidden:new Set(),selAttr:null,attrHidden:new Set(),rankSel:{r1:true,r123:v.recommended==='bar'},tabIdx:0,stackMode:'pct'};
+      hidden:new Set(),selAttr:null,attrHidden:new Set(),rankSel:{r1:true,r123:v.recommended==='bar'},tabIdx:0,stackMode:'pct',showGap:true,showCampaign:true};
   const m=document.getElementById('main');
   m.innerHTML=`<div class="crumb"><span class="pill">${v.section}</span><span>${v.fmt||''}</span></div>
     <h2 class="qt">${v.title}</h2><div id="vbody"></div>`;
@@ -1224,10 +1339,10 @@ function vTrend(v){
           <span class="ctrl-label">기간</span>${periodCtrlHTML(b.months,vs.ct,vs)}
           <span class="ctrl-sep"></span>
           <span class="ctrl-label">차트 형태</span><select class="msel" id="ctSel">${ctSelectHTML(v.recommended,vs)}</select>
-          <button class="btn" id="png">PNG</button>
+          <button class="btn" id="campTogBtn">캠페인</button><button class="btn" id="gapTogBtn">잡코리아-사람인 Gap</button><button class="btn" id="png">PNG</button>
         </div>
-        ${gapStripHTML(v.section,vs.ct,b.months,vs.rs,vs.re,[{label:'Gap',values:gapRow(jkS,srS,'%')||[]}])}
         ${campaignStripHTML()}
+        ${gapStripHTML(v.section,vs.ct,b.months,vs.rs,vs.re,[{label:'Gap',values:gapRow(jkS,srS,'%')||[]}])}
         <div class="chart" id="ch"></div>
         <div class="note" id="nt"></div>
       </div>${tableCard(b)}`;
@@ -1235,6 +1350,29 @@ function vTrend(v){
     wirePeriod(body,b.months,vs.ct,vs,draw);
     wireCtSelect(body,vs,v.recommended,()=>{paint();});
     document.getElementById('png').onclick=()=>dlPNG(chart);
+    (()=>{
+      const gTog=document.getElementById('gapTogBtn');
+      const cTog=document.getElementById('campTogBtn');
+      function styleBtn(btn,on){if(!btn)return;
+        btn.classList.remove('btn-on');btn.style.opacity=on?'1':'0.4';btn.style.color=on?'':'var(--soft)';}
+      if(gTog){
+        const gs=document.getElementById('gapstrip');
+        if(!gs){gTog.style.display='none';}
+        else{styleBtn(gTog,vs.showGap);gs.style.display=vs.showGap?'':'none';
+          gTog.onclick=()=>{vs.showGap=!vs.showGap;styleBtn(gTog,vs.showGap);
+            document.getElementById('gapstrip').style.display=vs.showGap?'':'none';};}
+      }
+      if(cTog){
+        const cs=document.getElementById('campstrip');
+        if(!cs||!CAMPAIGNS.length){cTog.style.display='none';}
+        else{styleBtn(cTog,vs.showCampaign);cs.style.display=vs.showCampaign?'':'none';
+          cTog.onclick=()=>{vs.showCampaign=!vs.showCampaign;styleBtn(cTog,vs.showCampaign);
+            document.getElementById('campstrip').style.display=vs.showCampaign?'':'none';
+            const sh=document.getElementById('campaignShade');if(sh)sh.style.display=vs.showCampaign?'':'none';
+            if(vs.showCampaign)renderView(CFG.views[state.view]);};}
+      }
+    })();
+
     wireTable(b);
     draw();
   }
@@ -1250,7 +1388,7 @@ function vTrend(v){
       nt.innerHTML='';
     }
     renderAlignedGap(chart,b.months,vs.rs,vs.re,[{label:'Gap',values:gapRow(jkS,srS,'%')||[]}]);
-    renderCampaignOverlay(chart,b.months,vs.rs,vs.re,shown.map(s=>s.label));
+    renderCampaignOverlay(chart,b.months,vs.rs,vs.re,shown.map(s=>s.label),vs.ct);
   }
   paint();
 }
@@ -1297,10 +1435,10 @@ function vScale(v){
           <span class="ctrl-sep"></span>
           <span class="ctrl-label">차트 형태</span><select class="msel" id="ctSel">${ctSelectHTML(v.recommended,vs)}</select>
           <span class="ctrl-sep"></span>${unitSegHTML(enabled)}
-          <button class="btn" id="png">PNG</button>
+          <button class="btn" id="campTogBtn">캠페인</button><button class="btn" id="gapTogBtn">잡코리아-사람인 Gap</button><button class="btn" id="png">PNG</button>
         </div>
-        ${gapStripHTML(v.section,vs.ct,months,vs.rs,vs.re,[{label:'Gap ('+focusUnit+')',values:gapRow(jk&&jk.b,sr&&sr.b,focusUnit)||[]}])}
         ${campaignStripHTML()}
+        ${gapStripHTML(v.section,vs.ct,months,vs.rs,vs.re,[{label:'Gap ('+focusUnit+')',values:gapRow(jk&&jk.b,sr&&sr.b,focusUnit)||[]}])}
         <div class="chart" id="ch"></div>
         <div class="note" id="nt"></div>
       </div>${tableCardMulti(brands.map(x=>x.b),v.title)}`;
@@ -1309,6 +1447,29 @@ function vScale(v){
     wirePeriod(body,months,vs.ct,vs,draw);
     wireCtSelect(body,vs,v.recommended,()=>{paint();});
     document.getElementById('png').onclick=()=>dlPNG(chart);
+    (()=>{
+      const gTog=document.getElementById('gapTogBtn');
+      const cTog=document.getElementById('campTogBtn');
+      function styleBtn(btn,on){if(!btn)return;
+        btn.classList.remove('btn-on');btn.style.opacity=on?'1':'0.4';btn.style.color=on?'':'var(--soft)';}
+      if(gTog){
+        const gs=document.getElementById('gapstrip');
+        if(!gs){gTog.style.display='none';}
+        else{styleBtn(gTog,vs.showGap);gs.style.display=vs.showGap?'':'none';
+          gTog.onclick=()=>{vs.showGap=!vs.showGap;styleBtn(gTog,vs.showGap);
+            document.getElementById('gapstrip').style.display=vs.showGap?'':'none';};}
+      }
+      if(cTog){
+        const cs=document.getElementById('campstrip');
+        if(!cs||!CAMPAIGNS.length){cTog.style.display='none';}
+        else{styleBtn(cTog,vs.showCampaign);cs.style.display=vs.showCampaign?'':'none';
+          cTog.onclick=()=>{vs.showCampaign=!vs.showCampaign;styleBtn(cTog,vs.showCampaign);
+            document.getElementById('campstrip').style.display=vs.showCampaign?'':'none';
+            const sh=document.getElementById('campaignShade');if(sh)sh.style.display=vs.showCampaign?'':'none';
+            if(vs.showCampaign)renderView(CFG.views[state.view]);};}
+      }
+    })();
+
     wireTableMulti(brands.map(x=>x.b),v.title,vs);
     draw();
   }
@@ -1336,7 +1497,7 @@ function vScale(v){
       nt.innerHTML=vs.unit==='NPS'?'<span style="font-size:10.5px;color:var(--soft)">NPS = (9·10점 응답자 비율) − (0~6점 응답자 비율)</span>':'';
     }
     {const focusUnit=vs.unit==='%'?'Top2%':vs.unit;renderAlignedGap(chart,months,vs.rs,vs.re,[{label:'Gap ('+focusUnit+')',values:gapRow(jk&&jk.b,sr&&sr.b,focusUnit)||[]}]);}
-    renderCampaignOverlay(chart,months,vs.rs,vs.re,brands.filter(x=>!vs.hidden.has(x.brand)).map(x=>x.brand));
+    renderCampaignOverlay(chart,months,vs.rs,vs.re,brands.filter(x=>!vs.hidden.has(x.brand)).map(x=>x.brand),vs.ct);
   }
   paint();
 }
@@ -1365,10 +1526,10 @@ function vRank(v){
           <span class="ctrl-sep"></span>
           <span class="ctrl-label">차트 형태</span><select class="msel" id="ctSel">${ctSelectHTML(v.recommended,vs)}</select>
           <span class="ctrl-label" style="margin-left:4px">순위</span><div class="seg" id="rkSeg"><button data-k="r1">1순위</button><button data-k="r123">1+2+3순위</button></div>
-          <button class="btn" id="png">PNG</button>
+          <button class="btn" id="campTogBtn">캠페인</button><button class="btn" id="gapTogBtn">잡코리아-사람인 Gap</button><button class="btn" id="png">PNG</button>
         </div>
-        ${gapStripHTML(v.section,vs.ct,months,vs.rs,vs.re,[{label:'Gap (1순위)',values:gapRow(jk1,sr1,'%')||[]},{label:'Gap (1+2+3순위)',values:gapRow(jk3,sr3,'%')||[]}])}
         ${campaignStripHTML()}
+        ${gapStripHTML(v.section,vs.ct,months,vs.rs,vs.re,[{label:'Gap (1순위)',values:gapRow(jk1,sr1,'%')||[]},{label:'Gap (1+2+3순위)',values:gapRow(jk3,sr3,'%')||[]}])}
         <div class="chart" id="ch"></div>
         <div class="note" id="nt"></div>
       </div>${tableCardMulti([b1,b3].filter(Boolean),v.title)}`;
@@ -1388,6 +1549,29 @@ function vRank(v){
       syncRk();draw();};});
     syncRk();
     document.getElementById('png').onclick=()=>dlPNG(chart);
+    (()=>{
+      const gTog=document.getElementById('gapTogBtn');
+      const cTog=document.getElementById('campTogBtn');
+      function styleBtn(btn,on){if(!btn)return;
+        btn.classList.remove('btn-on');btn.style.opacity=on?'1':'0.4';btn.style.color=on?'':'var(--soft)';}
+      if(gTog){
+        const gs=document.getElementById('gapstrip');
+        if(!gs){gTog.style.display='none';}
+        else{styleBtn(gTog,vs.showGap);gs.style.display=vs.showGap?'':'none';
+          gTog.onclick=()=>{vs.showGap=!vs.showGap;styleBtn(gTog,vs.showGap);
+            document.getElementById('gapstrip').style.display=vs.showGap?'':'none';};}
+      }
+      if(cTog){
+        const cs=document.getElementById('campstrip');
+        if(!cs||!CAMPAIGNS.length){cTog.style.display='none';}
+        else{styleBtn(cTog,vs.showCampaign);cs.style.display=vs.showCampaign?'':'none';
+          cTog.onclick=()=>{vs.showCampaign=!vs.showCampaign;styleBtn(cTog,vs.showCampaign);
+            document.getElementById('campstrip').style.display=vs.showCampaign?'':'none';
+            const sh=document.getElementById('campaignShade');if(sh)sh.style.display=vs.showCampaign?'':'none';
+            if(vs.showCampaign)renderView(CFG.views[state.view]);};}
+      }
+    })();
+
     wireTableMulti([b1,b3].filter(Boolean),v.title,vs);
     draw();
   }
@@ -1498,7 +1682,7 @@ function vRank(v){
       nt.innerHTML='';
     }
     renderAlignedGap(chart,months,vs.rs,vs.re,[{label:'Gap (1순위)',values:gapRow(jk1,sr1,'%')||[]},{label:'Gap (1+2+3순위)',values:gapRow(jk3,sr3,'%')||[]}]);
-    renderCampaignOverlay(chart,months,vs.rs,vs.re,shownLabels);
+    renderCampaignOverlay(chart,months,vs.rs,vs.re,shownLabels,vs.ct);
   }
   paint();
 }
@@ -1516,7 +1700,7 @@ function vStack(v){
           <span class="ctrl-label">기간</span>${periodCtrlHTML(b.months,vs.ct,vs)}
           <span class="ctrl-sep"></span>
           <span class="ctrl-label">차트 형태</span><select class="msel" id="ctSel">${ctSelectHTML(v.recommended,vs)}</select>
-          <button class="btn" id="png">PNG</button>
+          <button class="btn" id="campTogBtn">캠페인</button><button class="btn" id="gapTogBtn">잡코리아-사람인 Gap</button><button class="btn" id="png">PNG</button>
         </div>
         <div class="chart" id="ch"></div>
         <div class="note" id="nt"></div>
@@ -1524,6 +1708,29 @@ function vStack(v){
     wirePeriod(body,b.months,vs.ct,vs,draw);
     wireCtSelect(body,vs,v.recommended,()=>{paint();});
     document.getElementById('png').onclick=()=>dlPNG(chart);
+    (()=>{
+      const gTog=document.getElementById('gapTogBtn');
+      const cTog=document.getElementById('campTogBtn');
+      function styleBtn(btn,on){if(!btn)return;
+        btn.classList.remove('btn-on');btn.style.opacity=on?'1':'0.4';btn.style.color=on?'':'var(--soft)';}
+      if(gTog){
+        const gs=document.getElementById('gapstrip');
+        if(!gs){gTog.style.display='none';}
+        else{styleBtn(gTog,vs.showGap);gs.style.display=vs.showGap?'':'none';
+          gTog.onclick=()=>{vs.showGap=!vs.showGap;styleBtn(gTog,vs.showGap);
+            document.getElementById('gapstrip').style.display=vs.showGap?'':'none';};}
+      }
+      if(cTog){
+        const cs=document.getElementById('campstrip');
+        if(!cs||!CAMPAIGNS.length){cTog.style.display='none';}
+        else{styleBtn(cTog,vs.showCampaign);cs.style.display=vs.showCampaign?'':'none';
+          cTog.onclick=()=>{vs.showCampaign=!vs.showCampaign;styleBtn(cTog,vs.showCampaign);
+            document.getElementById('campstrip').style.display=vs.showCampaign?'':'none';
+            const sh=document.getElementById('campaignShade');if(sh)sh.style.display=vs.showCampaign?'':'none';
+            if(vs.showCampaign)renderView(CFG.views[state.view]);};}
+      }
+    })();
+
     wireTable(b);
     draw();
   }
@@ -1576,7 +1783,7 @@ function vSummary(v){
           <span class="ctrl-sep"></span>
           <span class="ctrl-label">차트 형태</span><select class="msel" id="ctSel">${ctSelectHTML(v.recommended,vs)}</select>
           <span class="ctrl-sep"></span>${unitSegHTML(enabled)}
-          <button class="btn" id="png">PNG</button>
+          <button class="btn" id="campTogBtn">캠페인</button><button class="btn" id="gapTogBtn">잡코리아-사람인 Gap</button><button class="btn" id="png">PNG</button>
         </div>
         <div class="chart" id="ch"></div>
         <div class="note" id="nt"></div>
@@ -1586,6 +1793,29 @@ function vSummary(v){
     wirePeriod(body,months,vs.ct,vs,draw);
     wireCtSelect(body,vs,v.recommended,()=>{paint();});
     document.getElementById('png').onclick=()=>dlPNG(chart);
+    (()=>{
+      const gTog=document.getElementById('gapTogBtn');
+      const cTog=document.getElementById('campTogBtn');
+      function styleBtn(btn,on){if(!btn)return;
+        btn.classList.remove('btn-on');btn.style.opacity=on?'1':'0.4';btn.style.color=on?'':'var(--soft)';}
+      if(gTog){
+        const gs=document.getElementById('gapstrip');
+        if(!gs){gTog.style.display='none';}
+        else{styleBtn(gTog,vs.showGap);gs.style.display=vs.showGap?'':'none';
+          gTog.onclick=()=>{vs.showGap=!vs.showGap;styleBtn(gTog,vs.showGap);
+            document.getElementById('gapstrip').style.display=vs.showGap?'':'none';};}
+      }
+      if(cTog){
+        const cs=document.getElementById('campstrip');
+        if(!cs||!CAMPAIGNS.length){cTog.style.display='none';}
+        else{styleBtn(cTog,vs.showCampaign);cs.style.display=vs.showCampaign?'':'none';
+          cTog.onclick=()=>{vs.showCampaign=!vs.showCampaign;styleBtn(cTog,vs.showCampaign);
+            document.getElementById('campstrip').style.display=vs.showCampaign?'':'none';
+            const sh=document.getElementById('campaignShade');if(sh)sh.style.display=vs.showCampaign?'':'none';
+            if(vs.showCampaign)renderView(CFG.views[state.view]);};}
+      }
+    })();
+
     wireTableMulti([tBlk,bBlk,mBlk].filter(Boolean),v.title,vs);
     draw();
   }
@@ -1667,11 +1897,11 @@ function vRadarOne(v){
           <span class="ctrl-label">기간</span>${periodCtrlHTML(months,vs.ct,vs)}
           <span class="ctrl-sep"></span>
           <span class="ctrl-label">차트 형태</span><select class="msel" id="ctSel">${ctSelectHTML(v.recommended,vs)}</select>
-          <button class="btn" id="png">PNG</button>
+          <button class="btn" id="campTogBtn">캠페인</button><button class="btn" id="gapTogBtn">잡코리아-사람인 Gap</button><button class="btn" id="png">PNG</button>
         </div>
 
-        ${showAttrPicker?gapStripHTML(v.section,vs.ct,months,vs.rs,vs.re,[{label:'Gap ('+vs.selAttr+')',values:(()=>{const jr=jkBlk&&jkBlk.series.find(s=>s.label===vs.selAttr),sr2=srBlk&&srBlk.series.find(s=>s.label===vs.selAttr);return jr&&sr2?jr.values.map((val,i)=>(val==null||sr2.values[i]==null)?null:val-sr2.values[i]):[];})()}]):''}
         ${campaignStripHTML()}
+        ${showAttrPicker?gapStripHTML(v.section,vs.ct,months,vs.rs,vs.re,[{label:'Gap ('+vs.selAttr+')',values:(()=>{const jr=jkBlk&&jkBlk.series.find(s=>s.label===vs.selAttr),sr2=srBlk&&srBlk.series.find(s=>s.label===vs.selAttr);return jr&&sr2?jr.values.map((val,i)=>(val==null||sr2.values[i]==null)?null:val-sr2.values[i]):[];})()}]):''}
         <div class="chart" id="ch"></div>
         <div class="note" id="nt"></div>
       </div>${tableCardMulti(blocks,v.title)}`;
@@ -1680,6 +1910,29 @@ function vRadarOne(v){
     wirePeriod(body,months,vs.ct,vs,draw);
     wireCtSelect(body,vs,v.recommended,()=>{paint();});
     document.getElementById('png').onclick=()=>dlPNG(chart);
+    (()=>{
+      const gTog=document.getElementById('gapTogBtn');
+      const cTog=document.getElementById('campTogBtn');
+      function styleBtn(btn,on){if(!btn)return;
+        btn.classList.remove('btn-on');btn.style.opacity=on?'1':'0.4';btn.style.color=on?'':'var(--soft)';}
+      if(gTog){
+        const gs=document.getElementById('gapstrip');
+        if(!gs){gTog.style.display='none';}
+        else{styleBtn(gTog,vs.showGap);gs.style.display=vs.showGap?'':'none';
+          gTog.onclick=()=>{vs.showGap=!vs.showGap;styleBtn(gTog,vs.showGap);
+            document.getElementById('gapstrip').style.display=vs.showGap?'':'none';};}
+      }
+      if(cTog){
+        const cs=document.getElementById('campstrip');
+        if(!cs||!CAMPAIGNS.length){cTog.style.display='none';}
+        else{styleBtn(cTog,vs.showCampaign);cs.style.display=vs.showCampaign?'':'none';
+          cTog.onclick=()=>{vs.showCampaign=!vs.showCampaign;styleBtn(cTog,vs.showCampaign);
+            document.getElementById('campstrip').style.display=vs.showCampaign?'':'none';
+            const sh=document.getElementById('campaignShade');if(sh)sh.style.display=vs.showCampaign?'':'none';
+            if(vs.showCampaign)renderView(CFG.views[state.view]);};}
+      }
+    })();
+
     wireTableMulti(blocks,v.title,vs);
     draw();
   }
@@ -1728,7 +1981,7 @@ function vRadarOne(v){
       const jr=jkBlk&&jkBlk.series.find(s=>s.label===vs.selAttr),sr2=srBlk&&srBlk.series.find(s=>s.label===vs.selAttr);
       const vals=jr&&sr2?jr.values.map((val,i)=>(val==null||sr2.values[i]==null)?null:val-sr2.values[i]):[];
       renderAlignedGap(chart,months,vs.rs,vs.re,[{label:'Gap ('+vs.selAttr+')',values:vals}]);}
-    if(['line','bar','stack'].includes(vs.ct))renderCampaignOverlay(chart,months,vs.rs,vs.re,list.map(x=>x.label));
+    renderCampaignOverlay(chart,months,vs.rs,vs.re,list.map(x=>x.label),vs.ct);
   }
   paint();
 }
@@ -1751,10 +2004,10 @@ function vBPI(v){
           <span class="ctrl-label">기간</span>${periodCtrlHTML(bp.months,vs.ct,vs)}
           <span class="ctrl-sep"></span>
           <span class="ctrl-label">차트 형태</span><select class="msel" id="ctSel">${ctSelectHTML(v.recommended,vs)}</select>
-          <button class="btn" id="png">PNG</button>
+          <button class="btn" id="campTogBtn">캠페인</button><button class="btn" id="gapTogBtn">잡코리아-사람인 Gap</button><button class="btn" id="png">PNG</button>
         </div>
-        ${gapStripHTML(v.section,vs.ct,bp.months,vs.rs,vs.re,[{label:'Gap',values:gapRow(jk,sr,'%')||[]}])}
         ${campaignStripHTML()}
+        ${gapStripHTML(v.section,vs.ct,bp.months,vs.rs,vs.re,[{label:'Gap',values:gapRow(jk,sr,'%')||[]}])}
         <div class="chart" id="ch"></div>
         <div class="note">BPI(브랜드 파워 지수)는 인지·이미지·선호·이용·충성을 종합한 핵심 지표입니다 · 최신월 사람인과의 격차 ${g==null?'–':(g>0?'+':'')+g.toFixed(1)}p · <b style="color:var(--jk)">잡코리아</b>·<b style="color:var(--sr)">사람인</b> 매월 수치 표시.</div>
       </div>`;
@@ -1762,6 +2015,29 @@ function vBPI(v){
     wirePeriod(body,bp.months,vs.ct,vs,draw);
     wireCtSelect(body,vs,v.recommended,()=>{paint();});
     document.getElementById('png').onclick=()=>dlPNG(chart);
+    (()=>{
+      const gTog=document.getElementById('gapTogBtn');
+      const cTog=document.getElementById('campTogBtn');
+      function styleBtn(btn,on){if(!btn)return;
+        btn.classList.remove('btn-on');btn.style.opacity=on?'1':'0.4';btn.style.color=on?'':'var(--soft)';}
+      if(gTog){
+        const gs=document.getElementById('gapstrip');
+        if(!gs){gTog.style.display='none';}
+        else{styleBtn(gTog,vs.showGap);gs.style.display=vs.showGap?'':'none';
+          gTog.onclick=()=>{vs.showGap=!vs.showGap;styleBtn(gTog,vs.showGap);
+            document.getElementById('gapstrip').style.display=vs.showGap?'':'none';};}
+      }
+      if(cTog){
+        const cs=document.getElementById('campstrip');
+        if(!cs||!CAMPAIGNS.length){cTog.style.display='none';}
+        else{styleBtn(cTog,vs.showCampaign);cs.style.display=vs.showCampaign?'':'none';
+          cTog.onclick=()=>{vs.showCampaign=!vs.showCampaign;styleBtn(cTog,vs.showCampaign);
+            document.getElementById('campstrip').style.display=vs.showCampaign?'':'none';
+            const sh=document.getElementById('campaignShade');if(sh)sh.style.display=vs.showCampaign?'':'none';
+            if(vs.showCampaign)renderView(CFG.views[state.view]);};}
+      }
+    })();
+
     draw();
   }
   function draw(){
@@ -1772,7 +2048,7 @@ function vBPI(v){
       drawByType(vs.ct,bp.months.slice(vs.rs,vs.re+1),sliceList(shown,vs.rs,vs.re),{unitLabel:'점',stackMode:vs.stackMode});
     }
     renderAlignedGap(chart,bp.months,vs.rs,vs.re,[{label:'Gap',values:gapRow(jk,sr,'%')||[]}]);
-    renderCampaignOverlay(chart,bp.months,vs.rs,vs.re,shown.map(s=>s.label));
+    renderCampaignOverlay(chart,bp.months,vs.rs,vs.re,shown.map(s=>s.label),vs.ct);
   }
   paint();
 }
