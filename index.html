@@ -2307,19 +2307,29 @@ function applyNewData(newData){
 /* ===== GitHub persistence ===== */
 const GH_LS_KEY='jk_dash_gh_cfg';
 function ghReadCfg(){
-  const repo=(document.getElementById('ghRepo')||{}).value||'';
-  const path=(document.getElementById('ghPath')||{}).value||'data.json';
-  const branch=(document.getElementById('ghBranch')||{}).value||'main';
-  const token=(document.getElementById('ghToken')||{}).value||'';
-  return {repo:repo.trim(),path:(path||'data.json').trim(),branch:(branch||'main').trim(),token:token.trim()};
+  const gh=window.__GH__||{};
+  const repo=((document.getElementById('ghRepo')||{}).value||'').trim()||gh.repo||'';
+  const path=((document.getElementById('ghPath')||{}).value||'').trim()||gh.path||'data.json';
+  const branch=((document.getElementById('ghBranch')||{}).value||'').trim()||gh.branch||'main';
+  const token=((document.getElementById('ghToken')||{}).value||'').trim();
+  return {repo,path,branch,token};
 }
 function ghLoadSaved(){
   try{
+    const gh=window.__GH__||{};
+    /* pre-fill repo/path/branch from window.__GH__ as defaults */
+    if(document.getElementById('ghRepo')&&!document.getElementById('ghRepo').value)
+      document.getElementById('ghRepo').value=gh.repo||'';
+    if(document.getElementById('ghPath')&&!document.getElementById('ghPath').value)
+      document.getElementById('ghPath').value=gh.path||'data.json';
+    if(document.getElementById('ghBranch')&&!document.getElementById('ghBranch').value)
+      document.getElementById('ghBranch').value=gh.branch||'main';
+    /* then override with saved config (includes token) */
     const raw=localStorage.getItem(GH_LS_KEY);if(!raw)return;
     const c=JSON.parse(raw);
-    if(document.getElementById('ghRepo'))document.getElementById('ghRepo').value=c.repo||'';
-    if(document.getElementById('ghPath'))document.getElementById('ghPath').value=c.path||'data.json';
-    if(document.getElementById('ghBranch'))document.getElementById('ghBranch').value=c.branch||'main';
+    if(c.repo&&document.getElementById('ghRepo'))document.getElementById('ghRepo').value=c.repo;
+    if(c.path&&document.getElementById('ghPath'))document.getElementById('ghPath').value=c.path;
+    if(c.branch&&document.getElementById('ghBranch'))document.getElementById('ghBranch').value=c.branch;
     if(c.token&&document.getElementById('ghToken'))document.getElementById('ghToken').value=c.token;
     if(document.getElementById('ghRemember'))document.getElementById('ghRemember').checked=true;
   }catch(_){}
