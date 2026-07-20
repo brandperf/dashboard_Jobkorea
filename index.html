@@ -2379,7 +2379,6 @@ function vBPI(v){
         ${campaignStripHTML()}
         ${gapStripHTML(v.section,vs.ct,bp.months,vs.rs,vs.re,[{label:'Gap',values:gapRow(jk,sr,'%')||[]}])}
         <div class="chart" id="ch"></div>
-        <div class="note">BPI(브랜드 파워 지수)는 인지·이미지·선호·이용·충성을 종합한 핵심 지표입니다 · 최신월 사람인과의 격차 ${g==null?'–':(g>0?'+':'')+g.toFixed(1)}p · <b style="color:var(--jk)">잡코리아</b>·<b style="color:var(--sr)">사람인</b> 매월 수치 표시.</div>
       </div>`;
     wireBrandDrop(body,brands.map(s=>s.label),vs,draw,'brandDd');
     wirePeriod(body,bp.months,vs.ct,vs,draw);
