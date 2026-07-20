@@ -1486,8 +1486,9 @@ function renderView(v){
   vs={ct:v.recommended||'line',isRec:true,unit:(v.metrics&&v.metrics[0])||'%',month:null,rs:null,re:null,
       hidden:new Set(),selAttr:null,attrHidden:new Set(),rankSel:{r1:true,r123:v.recommended==='bar'},tabIdx:0,stackMode:'pct',showGap:true,showCampaign:true};
   const m=document.getElementById('main');
+  const displayTitle=v.title.replace(/^(SQ|[A-Z])\d+[a-z]?\.\s*/,'');
   m.innerHTML=`<div class="crumb"><span class="pill">${v.section}</span><span>${v.fmt||''}</span></div>
-    <h2 class="qt">${v.title}</h2><div id="vbody"></div>`;
+    <h2 class="qt">${displayTitle}</h2><div id="vbody"></div>`;
   const R={pie_month:vStack,trend_filter:vTrend,scale_combined:vScale,summary_combined:vSummary,
     rank_pair:vRank,stack_or_pie:vStack,radar_one:vRadarOne,bpi:vBPI}[v.type];
   (R||vTrend)(v);
