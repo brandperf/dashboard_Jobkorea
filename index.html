@@ -2332,9 +2332,19 @@ function vRadarOne(v){
       renderCampaignOverlay(null,months,vs.rs,vs.re,[],vs.ct);
       return;
     }
-    const list=blocks.filter(b=>!vs.hidden.has(brandOf(b.title))).map((b,i)=>{
+    let list=blocks.filter(b=>!vs.hidden.has(brandOf(b.title))).map((b,i)=>{
       const r=b.series.find(s=>s.label===vs.selAttr);return r?{label:brandOf(b.title),values:r.values}:null;
     }).filter(Boolean);
+    /* 감성적 이미지: 특정 달에 모든 브랜드가 0/무응답이면 그 달은 '조사 안 됨'으로 보고
+       모든 브랜드 값을 null 처리 → 꺾은선이 그 달에서 끊긴다. (개별 브랜드만 0인 경우는 유지) */
+    if(list.length){
+      const nMo=list[0].values.length;
+      const allZeroMonth=[];
+      for(let m=0;m<nMo;m++)allZeroMonth[m]=!list.some(s=>{const val=s.values[m];return val!=null&&val!==0;});
+      if(allZeroMonth.some(Boolean)){
+        list=list.map(s=>({label:s.label,values:s.values.map((val,m)=>allZeroMonth[m]?null:val)}));
+      }
+    }
     if(vs.ct==='pie'){
       drawByType('pie',months,list,{unitLabel:'%',monthIdx:vs.month,stackMode:vs.stackMode});
       nt.innerHTML='';
