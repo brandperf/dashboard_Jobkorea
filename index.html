@@ -346,21 +346,25 @@ function parseSchedule(str,baseYear){
   const parts=str.split(/[~～\-]/);
   const left=parts[0].trim();
   const right=(parts[1]||'').trim();
-  function toYM(tok,defYear){
+  function toYMD(tok,defYear){
     if(!tok)return null;
     const seg=tok.split('.').map(x=>x.trim()).filter(x=>x!=='');
-    if(seg.length>=3)return fullYear(seg[0])*12+(+seg[1]);
+    if(seg.length>=3)return {ym:fullYear(seg[0])*12+(+seg[1]), day:(+seg[2]||null)};   /* year.month.day */
     if(seg.length===2){
       const a=+seg[0], b=+seg[1];
-      if(a>=16&&a<=40)return fullYear(a)*12+b;
-      return defYear*12+a;
+      if(a>=16&&a<=40)return {ym:fullYear(a)*12+b, day:null};   /* year.month */
+      return {ym:defYear*12+a, day:(b||null)};                  /* month.day */
     }
-    if(seg.length===1)return defYear*12+(+seg[0]);
+    if(seg.length===1)return {ym:defYear*12+(+seg[0]), day:null};
     return null;
   }
-  const startYM=toYM(left,baseYear);
-  let endYM=right?toYM(right, Math.floor((startYM||baseYear*12)/12)):null;
-  return {startYM,endYM};
+  const L=toYMD(left,baseYear);
+  const startYM=L?L.ym:null, startDay=L?L.day:null;
+  const R=right?toYMD(right, Math.floor((startYM||baseYear*12)/12)):null;
+  let endYM=R?R.ym:null; const endDay=R?R.day:null;
+  /* 연도 표기 없이 해를 넘기는 일정(예: "11.19~1.31")은 종료월이 시작월보다 앞서므로 다음 해로 보정 */
+  if(endYM!=null&&startYM!=null&&endYM<startYM)endYM+=12;
+  return {startYM,endYM,startDay,endDay};
 }
 
 function parseCampaignWorkbook(wb){
@@ -396,7 +400,7 @@ function parseCampaignWorkbook(wb){
           const rng=parseSchedule(sc,baseYear);
           if(!rng||rng.startYM==null)return;
           out.push({brand:String(brand||sn).trim(),
-            startYM:rng.startYM,endYM:rng.endYM,
+            startYM:rng.startYM,endYM:rng.endYM,startDay:rng.startDay,endDay:rng.endDay,
             type:types[i]?String(types[i]).trim():'',
             name:String(nm).trim(),
             cost:costs[i]?String(costs[i]).trim():'',
@@ -656,6 +660,10 @@ function renderCampaignOverlay(chartInst,months,s,e,visibleBrands,ct,forceMonthP
   if(campTog){campTog.disabled=false;campTog.style.opacity='';campTog.style.color='';}
   if(!strip||!chEl||!chartInst)return;
   const camps=campaignsForView(months,s,e,visibleBrands);
+  /* backfill day-of-month from raw schedule for campaigns loaded without day fields (older campaigns.json) */
+  camps.forEach(c=>{
+    if(!('startDay' in c)&&c.schedRaw){const rr=parseSchedule(c.schedRaw,Math.floor((c.startYM||0)/12));if(rr){c.startDay=rr.startDay;c.endDay=rr.endDay;}}
+  });
   strip.innerHTML='';
   const oldSh=document.getElementById('campaignShade'); if(oldSh)oldSh.remove();
   if(!camps.length||!vs.showCampaign){
@@ -728,6 +736,17 @@ function renderCampaignOverlay(chartInst,months,s,e,visibleBrands,ct,forceMonthP
     if(boundaryGap){const band=fgW/N;return GRID_L+band*0.5+frac*(fgW-band)-CAMP_MARGIN+PX_ADJ;}
     const pad=fgW*0.03,usable=fgW-pad*2;
     return GRID_L+pad+frac*usable-CAMP_MARGIN+PX_ADJ;
+  }
+  /* Day-accurate x: place a date within its month by fraction of days.
+     start(isEnd=false) → month tick + (day-1)/daysInMonth ; end(isEnd=true) → tick + day/daysInMonth
+     (so e.g. 10.28 starts ~28/31 into Oct, and 12.31 ends right at the Jan tick). */
+  function daysInMonth(ym){const m=((ym-1)%12)+1, y=(ym-m)/12; const d=new Date(y,m,0).getDate(); return d||30;}
+  function pxForDate(ym,day,isEnd){
+    if(ym==null)return pxForYM(dataLastYM+1);
+    let frac;
+    if(day==null)frac=isEnd?1:0;
+    else{const dim=daysInMonth(ym); frac=isEnd?Math.min(1,day/dim):Math.max(0,(day-1)/dim);}
+    return pxForYM(ym+frac);
   }
   /* shade inside #ch — .card has no position:relative so its overflow:hidden
      does NOT clip absolute children whose containing block is #ch.
@@ -804,16 +823,22 @@ function renderCampaignOverlay(chartInst,months,s,e,visibleBrands,ct,forceMonthP
 
     const clusters=clusterOverlap(brandMap[brand]);
     clusters.forEach(cl=>{
-      /* start at month mark, end at next-month mark (covers full end month) */
-      const x0=pxForYM(cl.startYM);
-      const x1=pxForYM(cl.endYM==null?dataLastYM+1:cl.endYM+1);
+      /* day-accurate x per campaign: start at start-day, end through end-day (end-day → next tick when day=말일) */
+      const segX=cl.camps.map(c=>{
+        const cx0=pxForDate(c.startYM,c.startDay,false);
+        const effEndYM=c.endYM==null?dataLastYM:c.endYM;
+        const effEndDay=c.endYM==null?null:c.endDay;
+        const cx1=Math.max(cx0+2,pxForDate(effEndYM,effEndDay,true));
+        return {c,x0:cx0,x1:cx1};
+      });
+      const x0=Math.min.apply(null,segX.map(z=>z.x0));
+      const x1=Math.max.apply(null,segX.map(z=>z.x1));
       const totalW=Math.max(4,x1-x0);
       const n=cl.camps.length;
-      cl.camps.forEach(c=>{
-        const sx0=pxForYM(c.startYM), sx1=pxForYM(c.endYM==null?dataLastYM+1:c.endYM+1);
-        const w=Math.max(2,sx1-sx0);
+      segX.forEach(z=>{
+        const w=Math.max(2,z.x1-z.x0);
         const sh=document.createElement('div');
-        sh.style.cssText=`position:absolute;left:${sx0+CAMP_MARGIN}px;top:${shadeTop}px;width:${w}px;height:${shadeH}px;`+
+        sh.style.cssText=`position:absolute;left:${z.x0+CAMP_MARGIN}px;top:${shadeTop}px;width:${w}px;height:${shadeH}px;`+
           `background:rgba(${col.rgb},0.09);`+
           `border-left:1px dashed rgba(${col.rgb},0.55);border-right:1px dashed rgba(${col.rgb},0.55)`;
         shade.appendChild(sh);
