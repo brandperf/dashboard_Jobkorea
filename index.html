@@ -175,8 +175,8 @@ tbody tr.derived td{color:var(--soft)}
   <aside class="side">
     <div class="side-h">
       <div class="brand"><span class="dot"></span> Brand Tracking</div>
-      <h1>잡코리아 브랜드 경쟁력 진단</h1>
-      <div class="sub">소비자 트래킹 · 21년 12월–26년 6월</div>
+      <h1>잡코리아 브랜드 경쟁력 진단 조사</h1>
+      <div class="sub" id="subLine">주요 지표 트래킹 · 21년 12월~26년 6월</div>
     </div>
     <div class="search"><input id="q" placeholder="문항 검색" autocomplete="off"></div>
     <div class="upload-wrap" style="display:none">
@@ -2606,6 +2606,13 @@ function validateNewData(newData){
 }
 
 /* Swap in new data: replace DATA, re-run cleanBlock/R28 fix, rebuild lookups, filter menu, re-render */
+/* 헤더 부제의 기간(21년 12월~26년 6월)을 현재 데이터의 월 범위로 자동 표기 */
+function monthRangeLabel(){
+  let lo=null,hi=null,loL='',hiL='';
+  (DATA.blocks||[]).forEach(b=>(b.months||[]).forEach(m=>{const ym=monthLabelToYM(m);if(ym==null)return;if(lo==null||ym<lo){lo=ym;loL=m;}if(hi==null||ym>hi){hi=ym;hiL=m;}}));
+  return (loL&&hiL)?(loL+'~'+hiL):'';
+}
+function updateSubline(){const el=document.getElementById('subLine');if(el){const r=monthRangeLabel();el.textContent='주요 지표 트래킹'+(r?(' · '+r):'');}}
 function applyNewData(newData){
   sanitizeBlocks(newData.blocks);
   DATA=newData;
@@ -2629,6 +2636,7 @@ function applyNewData(newData){
   const tomIdx=CFG.views.findIndex(v=>v.title.includes('TOM'));
   state.view=tomIdx>=0?tomIdx:0;
   if(CFG.views.length){state.openSecs.add(CFG.views[state.view].section);renderList();renderView(CFG.views[state.view]);}
+  updateSubline();
 }
 
 /* ===== GitHub persistence ===== */
@@ -2827,6 +2835,7 @@ renderList();
 const tomIdx=CFG.views.findIndex(v=>v.title.includes('TOM'));
 state.view=tomIdx>=0?tomIdx:0;state.openSecs.add(CFG.views[state.view].section);
 renderList();renderView(CFG.views[state.view]);
+updateSubline();
 ghTryLoadRemote();
 ghTryLoadCampaigns();
 
