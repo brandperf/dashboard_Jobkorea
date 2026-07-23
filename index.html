@@ -875,7 +875,7 @@ function renderCampaignOverlay(chartInst,months,s,e,visibleBrands,ct,forceMonthP
 }
 
 /* Populate gap cells aligned to chart x-axis - called after chart renders */
-function renderAlignedGap(chartInst,allMonths,s,e,gapRows,useMath){
+function renderAlignedGap(chartInst,allMonths,s,e,gapRows,useMath,barGroupN){
   const validRows=gapRows.filter(r=>r&&r.values);
   if(!validRows.length)return;
 
@@ -895,13 +895,22 @@ function renderAlignedGap(chartInst,allMonths,s,e,gapRows,useMath){
     /* Prefer exact pixel positions from ECharts; fall back to math if unavailable */
     let usePixel=false, pxOffset=0, pxAt=null;
     try{
-      if(!useMath&&typeof chartInst.convertToPixel==='function'){
-        const test=chartInst.convertToPixel({xAxisIndex:0},0);
-        if(typeof test==='number'&&isFinite(test)){
-          usePixel=true;
-          /* gapCells left edge is CELLS_PAD right of chart-canvas left edge */
-          pxOffset=-CELLS_PAD;
-          pxAt=(li)=>chartInst.convertToPixel({xAxisIndex:0},li);
+      if(typeof chartInst.convertToPixel==='function'){
+        if(barGroupN!=null){
+          /* rank bar: month i occupies (barGroupN+1) category slots; its center = i*(barGroupN+1)+(barGroupN-1)/2 */
+          const test=chartInst.convertToPixel({xAxisIndex:0},(barGroupN-1)/2);
+          if(typeof test==='number'&&isFinite(test)){
+            usePixel=true; pxOffset=-CELLS_PAD;
+            pxAt=(li)=>chartInst.convertToPixel({xAxisIndex:0},li*(barGroupN+1)+(barGroupN-1)/2);
+          }
+        }else if(!useMath){
+          const test=chartInst.convertToPixel({xAxisIndex:0},0);
+          if(typeof test==='number'&&isFinite(test)){
+            usePixel=true;
+            /* gapCells left edge is CELLS_PAD right of chart-canvas left edge */
+            pxOffset=-CELLS_PAD;
+            pxAt=(li)=>chartInst.convertToPixel({xAxisIndex:0},li);
+          }
         }
       }
     }catch(_){usePixel=false;}
@@ -1158,7 +1167,7 @@ function axisOption(months,series,opts){
       ?{trigger:'axis',confine:true,
         axisPointer:{type:opts.shadow?'shadow':'line',lineStyle:{color:'#b9b3a5'}},
         formatter:orderedAxisTooltipFormatter(opts.rank,{dec:1,unit:opts.pct?'%':''})}
-      :{trigger:'axis',confine:true,order:'valueDesc',
+      :{trigger:'axis',confine:true,order:opts.dataOrder?'seriesAsc':'valueDesc',
         axisPointer:{type:opts.shadow?'shadow':'line',lineStyle:{color:'#b9b3a5'}},
         valueFormatter:v=>v==null?'–':(+v).toFixed(1)},
     legend,
@@ -1404,10 +1413,14 @@ function drawByType(ct,months,seriesList,opts){
   if(ct==='pie'){drawPieOpt(months,seriesList,opts);return;}
   if(ct==='radar'){drawRadarOpt(months,seriesList,opts);return;}
   if(ct==='stack'){drawStackOpt(months,seriesList,opts);return;}
-  const aopts={unitLabel:opts.unitLabel,bar:ct==='bar',shadow:ct==='bar',scale:opts.scale,pct:opts.percentLike!==false&&(opts.unitLabel||'').includes('%'),rank:rankMap(seriesList)};
+  /* rank: when dataOrder is set, keep the caller's original series order; otherwise 잡코리아-first then value-desc */
+  const rank=opts.dataOrder
+    ?(()=>{const m={};seriesList.forEach((s,i)=>{m[s.label]=i;});return m;})()
+    :rankMap(seriesList);
+  const aopts={unitLabel:opts.unitLabel,bar:ct==='bar',shadow:ct==='bar',scale:opts.scale,min:opts.min,max:opts.max,dataOrder:opts.dataOrder,pct:opts.percentLike!==false&&(opts.unitLabel||'').includes('%'),rank};
   if(ct==='bar'){
-    /* vertical bar: 잡코리아 first, then most-recent-month value descending */
-    chart.setOption(axisOption(months,mkSeries(orderSeries(seriesList),months,ct,opts),aopts));
+    /* vertical bar: 잡코리아 first, then most-recent-month value descending (dataOrder=원본 보기 순서 유지) */
+    chart.setOption(axisOption(months,mkSeries(opts.dataOrder?seriesList:orderSeries(seriesList),months,ct,opts),aopts));
   }else{
     chart.setOption(axisOption(months,mkSeries(seriesList,months,ct,opts),aopts));
   }
@@ -1641,9 +1654,27 @@ function vTrend(v){
 }
 
 /* ============ SCALE (brand metric trend: A13/B3/C1/C3, 5점·0~10점 척도) ============ */
+/* Align multiple brand blocks onto one month axis by MATCHING the year-month written in each cell
+   (not by column position). Brands missing a month get null there, so gaps/late starts line up correctly. */
+function unifyBlocksMonths(blocks){
+  if(blocks.length<=1)return blocks;
+  const ymOf=new Map();
+  blocks.forEach(b=>b.months.forEach(m=>{if(!ymOf.has(m))ymOf.set(m,monthLabelToYM(m)||0);}));
+  const uni=[...ymOf.keys()].sort((a,b)=>ymOf.get(a)-ymOf.get(b));
+  const same=blocks.every(b=>b.months.length===uni.length&&b.months.every((m,i)=>m===uni[i]));
+  if(same)return blocks;
+  return blocks.map(b=>{
+    const idx=uni.map(m=>b.months.indexOf(m));
+    const remap=arr=>arr?idx.map(j=>j>=0?arr[j]:null):arr;
+    return {...b, months:uni,
+      series:b.series.map(s=>({...s, values:remap(s.values)})),
+      sample:b.sample?{...b.sample, values:remap(b.sample.values)}:b.sample};
+  });
+}
 function vScale(v){
-  const blocks=v.members.map(t=>byTitle[t]).filter(Boolean);
+  let blocks=v.members.map(t=>byTitle[t]).filter(Boolean);
   if(!blocks.length){document.getElementById('vbody').innerHTML='<div class="empty">데이터를 찾을 수 없습니다. (이번 달 테이블에 해당 문항이 없습니다)</div>';return;}
+  blocks=unifyBlocksMonths(blocks);  /* 셀의 년월 기준으로 브랜드 간 축 정렬 (위치가 아닌 라벨 매칭) */
   const brands=blocks.map(b=>({brand:brandOf(b.title),b}));
   const big=[JK,SR,'인크루트','워크넷','원티드','잡플래닛'];
   /* default: top-5 brands by most recent non-null value of the primary metric */
@@ -1748,8 +1779,7 @@ function vScale(v){
       const overlay=overlayRow?{label:overlayUnit,values:overlayRow.values.slice(vs.rs,vs.re+1),unit:overlayUnit.includes('평균')?'점':''}:null;
       const ms=months.slice(vs.rs,vs.re+1);
       drawStackOpt(ms,optRows,{stackMode:vs.stackMode,unitLabel:'%'+(overlay?' · '+(overlayUnit.includes('평균')?'점':'NPS'):''),overlay,percentLike:true,yMax:112,fixedOrder:isScale});
-      const meanTxt=overlayUnit&&overlayUnit.includes('평균')?overlayUnit:'평균';
-      nt.innerHTML=isScale?`<span style="font-size:10.5px;color:var(--soft)">${pick.brand} 응답 기준 · 상단 수치는 ${meanTxt}</span>`:'';
+      nt.innerHTML='';
     }else{
       const shown=brands.filter(x=>!vs.hidden.has(x.brand));
       const list=shown.map(x=>{const r=metricRow(x.b,vs.unit);return r?{label:x.brand,values:r.values}:null}).filter(Boolean);
@@ -1778,6 +1808,14 @@ function vRank(v){
   ensureDefaultRange(vs,months);
   const jk1=b1&&b1.series.find(s=>s.label.includes(JK)),sr1=b1&&b1.series.find(s=>s.label.includes(SR));
   const jk3=b3&&b3.series.find(s=>s.label.includes(JK)),sr3=b3&&b3.series.find(s=>s.label.includes(SR));
+  /* 경쟁사 Gap 기준: 선택한 순위(1순위/1+2+3순위)를 따른다. 세로막대에서 둘 다 선택 시 1순위 기준 */
+  function gapRankRows(){
+    const useR1=!!vs.rankSel.r1;
+    const gj=useR1?(jk1||jk3):(jk3||jk1), gs=useR1?(sr1||sr3):(sr3||sr1);
+    const lbl=useR1?'Gap (1순위)':'Gap (1+2+3순위)';
+    const gv=gapRow(gj,gs,'%');
+    return gv?[{label:lbl,values:gv}]:[];
+  }
   function rankPicks(){return Object.keys(vs.rankSel).filter(k=>vs.rankSel[k]);}
   function paint(){
     const focus=opts.find(s=>s.label.includes(JK))||opts[0];
@@ -1795,7 +1833,7 @@ function vRank(v){
           <button class="btn" id="campTogBtn">캠페인</button><button class="btn" id="gapTogBtn">잡코리아-사람인 Gap</button><button class="btn" id="png">PNG</button>
         </div>
         ${campaignStripHTML()}
-        ${gapStripHTML(v.section,vs.ct,months,vs.rs,vs.re,[{label:'Gap (1순위)',values:gapRow(jk1,sr1,'%')||[]},{label:'Gap (1+2+3순위)',values:gapRow(jk3,sr3,'%')||[]}])}
+        ${gapStripHTML(v.section,vs.ct,months,vs.rs,vs.re,gapRankRows())}
         <div class="chart" id="ch"></div>
         <div class="note" id="nt"></div>
       </div>${tableCardMulti([b1,b3].filter(Boolean),v.title)}`;
@@ -1812,7 +1850,7 @@ function vRank(v){
       const k=b.dataset.k;
       if(vs.ct==='bar'){vs.rankSel[k]=!vs.rankSel[k];if(!vs.rankSel.r1&&!vs.rankSel.r123)vs.rankSel[k]=true;}
       else{vs.rankSel={r1:k==='r1',r123:k==='r123'};}
-      syncRk();draw();};});
+      paint();};});
     syncRk();
     document.getElementById('png').onclick=()=>dlPNG(chart);
     (()=>{
@@ -1934,7 +1972,7 @@ function vRank(v){
         legend:{data:legendData,bottom:0,icon:'roundRect',itemWidth:12,itemHeight:8,itemGap:10,textStyle:{fontSize:10.5,color:'#3A4055'},selectedMode:false},
         graphic:[{type:'text',right:8,top:6,style:{text:'단위: %',fontSize:11,fill:'#9098AE',fontWeight:600}}],
         xAxis:{type:'category',data:cats.map(c=>c===null?'':c),boundaryGap:true,
-          axisLabel:{fontSize:10.5,color:'#6B7186',interval:0,
+          axisLabel:{fontSize:10.5,color:'#6B7186',interval:0,hideOverlap:true,
             formatter:(v,idx)=>{
               if(n===0)return'';
               const bi=idx%(n+1), mi=Math.floor(idx/(n+1));
@@ -1954,9 +1992,8 @@ function vRank(v){
       drawByType(vs.ct,ms,sliceList(list,vs.rs,vs.re),{unitLabel:'%',stackMode:vs.stackMode});
       nt.innerHTML='';
     }
-    renderAlignedGap(chart,months,vs.rs,vs.re,[{label:'Gap (1순위)',values:gapRow(jk1,sr1,'%')||[]},{label:'Gap (1+2+3순위)',values:gapRow(jk3,sr3,'%')||[]}],vs.ct==='bar');
-    /* For rank bar chart: x-axis has [n_brands+1]*N_months-1 cats, not N months.
-       Month i center = cat index i*(n+1)+(n-1)/2. Pre-compute and pass to overlay. */
+    /* For rank bar chart: x-axis has (n_brands+1)*N cats, so month i center = cat i*(n+1)+(n-1)/2.
+       renderAlignedGap uses barGroupN to center gap numbers exactly on each month group. */
     if(vs.ct==='bar'){
       const n=shownLabels.length;
       const N2=vs.re-vs.rs+1;
@@ -1967,8 +2004,10 @@ function vRank(v){
           if(typeof px==='number'&&isFinite(px))rankPx.push(px);else{rOk=false;break;}
         }catch(_){rOk=false;break;}
       }
+      renderAlignedGap(chart,months,vs.rs,vs.re,gapRankRows(),false,n);
       renderCampaignOverlay(chart,months,vs.rs,vs.re,shownLabels,vs.ct,rOk?rankPx:null);
     }else{
+      renderAlignedGap(chart,months,vs.rs,vs.re,gapRankRows(),false);
       renderCampaignOverlay(chart,months,vs.rs,vs.re,shownLabels,vs.ct);
     }
   }
@@ -2047,17 +2086,18 @@ function vStack(v){
   }
   function draw(){
     const nt=document.getElementById('nt');
+    const dataOrder=(v.title||'').includes('연령');  /* 연령: 툴팁·막대를 원본 데이터테이블 보기 순서대로 */
     if(vs.ct==='pie'||vs.ct==='radar'){
-      drawByType(vs.ct,b.months,opts,{unitLabel:'%',monthIdx:vs.month,percentLike:true,palette:OPTION_PALETTE,stackMode:vs.stackMode});
+      drawByType(vs.ct,b.months,opts,{unitLabel:'%',monthIdx:vs.month,percentLike:true,palette:OPTION_PALETTE,stackMode:vs.stackMode,dataOrder});
       nt.innerHTML='';
     }else if(vs.ct==='stack'){
-      const fixedOrder=(v.stackOrder==='reverse'||v.stackOrder==='fixed');
+      const fixedOrder=(v.stackOrder==='reverse'||v.stackOrder==='fixed')||dataOrder;
       let stackRows=sliceList(opts,vs.rs,vs.re).map((s,i)=>({...s,_oi:i}));
       if(v.stackOrder==='reverse')stackRows=stackRows.slice().reverse();
       drawStackOpt(b.months.slice(vs.rs,vs.re+1),stackRows,{stackMode:vs.stackMode,unitLabel:'%',percentLike:true,yMax:108,palette:OPTION_PALETTE,fixedOrder});
       nt.innerHTML='';
     }else{
-      drawByType(vs.ct,b.months.slice(vs.rs,vs.re+1),sliceList(opts,vs.rs,vs.re),{unitLabel:'%',percentLike:true,palette:OPTION_PALETTE,stackMode:vs.stackMode});
+      drawByType(vs.ct,b.months.slice(vs.rs,vs.re+1),sliceList(opts,vs.rs,vs.re),{unitLabel:'%',percentLike:true,palette:OPTION_PALETTE,stackMode:vs.stackMode,dataOrder});
       nt.innerHTML='';
     }
     {const jkS=b.series.find(s=>s.label.includes(JK)),srS=b.series.find(s=>s.label.includes(SR));
@@ -2260,15 +2300,14 @@ function vRadarOne(v){
     const showAttrPicker=vs.ct!=='radar';
     /* 상단 KPI: 잡코리아의 (제외되지 않은) 전체 속성 평균 */
     const jkForKpi=blocks.find(b=>brandOf(b.title).includes(JK));
-    const jkAttrRows=jkForKpi?attrs.map(a=>jkForKpi.series.find(s=>s.label===a)).filter(Boolean):[];
-    const avgSeries={label:'잡코리아 전체 속성 평균',values:months.map((m,i)=>{
-        const xs=jkAttrRows.map(r=>r.values[i]).filter(x=>x!=null);
-        return xs.length?xs.reduce((a,c)=>a+c,0)/xs.length:null;}),
-      yearValues:(blocks[0].years&&blocks[0].years.length)?blocks[0].years.map((y,i)=>{
-        const xs=jkAttrRows.map(r=>r.yearValues?r.yearValues[i]:null).filter(x=>x!=null);
-        return xs.length?xs.reduce((a,c)=>a+c,0)/xs.length:null;}):null};
-    const kpi=jkAttrRows.length?kpiHTML(avgSeries.label,avgSeries,months,'%',1,blocks[0].years):'';
-    body.innerHTML=kpi+`<div class="subline" style="min-height:16px"></div>
+    /* 각 시점(월·연도)마다 모든 브랜드가 0/무응답인 속성은 그 시점 평균에서 제외, 한 브랜드라도 0이 아니면 포함 (자사 값만 평균) */
+    const _anyPos=(a,i,yr)=>blocks.some(b=>{const r=b.series.find(s=>s.label===a);const val=r?(yr?(r.yearValues?r.yearValues[i]:null):r.values[i]):null;return val!=null&&val>0;});
+    const _jkVal=(a,i,yr)=>{const r=jkForKpi&&jkForKpi.series.find(s=>s.label===a);return r?(yr?(r.yearValues?r.yearValues[i]:null):r.values[i]):null;};
+    const _attrAvg=(i,yr)=>{const xs=attrsAll.filter(a=>_anyPos(a,i,yr)).map(a=>_jkVal(a,i,yr)).filter(x=>x!=null);return xs.length?xs.reduce((a,c)=>a+c,0)/xs.length:null;};
+    const avgSeries={label:`${JK} 전체 속성 평균`,
+      values:months.map((m,i)=>_attrAvg(i,false)),
+      yearValues:(blocks[0].years&&blocks[0].years.length)?blocks[0].years.map((y,i)=>_attrAvg(i,true)):null};
+    body.innerHTML=`<div class="subline" style="min-height:16px"></div>
       <div class="card">
         <div class="ctrl-bar">
           <span class="ctrl-label">브랜드</span>${brandDropHTML(brandsAll,vs,'brandDd')}
@@ -2491,7 +2530,7 @@ function wireTable(b){
 function tableCardMulti(blocks,fname){
   if(!blocks.length)return'';
   const cur=(vs&&vs.tabIdx<blocks.length)?vs.tabIdx:0;
-  const tabs=blocks.map((b,i)=>`<button class="btn ttab" data-i="${i}">${(b.name||b.title).replace(/^\[[A-Z]+\]\s*/,'')}</button>`).join('');
+  const tabs=blocks.map((b,i)=>`<button class="btn ttab" data-i="${i}">${(b.name||b.title).replace(/^\[[A-Z]+\]\s*/,'').replace(/^(SQ|[A-Z])\d+([-_]\d+)*[a-z]?\.\s*/,'')}</button>`).join('');
   return `<div class="card collapsed" id="tcard">
     <div class="card-h"><div class="t" style="cursor:pointer" id="ttog"><span class="chev">▾</span> 원본 데이터 테이블 · 연계 ${blocks.length}개</div>
       <button class="btn" id="csv">CSV 다운로드(전체)</button></div>
